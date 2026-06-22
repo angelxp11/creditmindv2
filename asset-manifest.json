@@ -1,13 +1,13 @@
 {
   "files": {
-    "main.css": "/creditmindv2/static/css/main.8f88bd39.css",
-    "main.js": "/creditmindv2/static/js/main.15f2438f.js",
+    "main.css": "/creditmindv2/static/css/main.6ee2e31f.css",
+    "main.js": "/creditmindv2/static/js/main.c6139164.js",
     "index.html": "/creditmindv2/index.html",
-    "main.8f88bd39.css.map": "/creditmindv2/static/css/main.8f88bd39.css.map",
-    "main.15f2438f.js.map": "/creditmindv2/static/js/main.15f2438f.js.map"
+    "main.6ee2e31f.css.map": "/creditmindv2/static/css/main.6ee2e31f.css.map",
+    "main.c6139164.js.map": "/creditmindv2/static/js/main.c6139164.js.map"
   },
   "entrypoints": [
-    "static/css/main.8f88bd39.css",
-    "static/js/main.15f2438f.js"
+    "static/css/main.6ee2e31f.css",
+    "static/js/main.c6139164.js"
   ]
 }
