@@ -171,6 +171,49 @@ body.dark-theme {
   color: var(--success);
 }
 
+/* ── Filtros ── */
+.ver-filters-bar {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 1rem 1.75rem 0.75rem;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ver-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ver-filter-group label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-label);
+}
+
+.ver-filter-group select {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.ver-filter-group select:hover {
+  border-color: var(--accent-color);
+}
+
+.ver-filter-group select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.1);
+}
+
 /* ── Lista / tabla ── */
 .ver-list {
   padding: 0;
@@ -306,7 +349,72 @@ body.dark-theme {
   border-color: transparent;
 }
 
-/* ── Responsive ── */
+/* -- Delete button -- */
+.ver-delete-btn {
+  border: none;
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+}
+
+.ver-delete-btn:hover {
+  background: var(--danger);
+  color: white;
+  transform: scale(1.1);
+}
+
+/* -- Paginación -- */
+.ver-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-card);
+}
+
+.ver-pagination-btn {
+  border: none;
+  background: var(--accent-color);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: 0.2s ease;
+  white-space: nowrap;
+}
+
+.ver-pagination-btn:hover:not(:disabled) {
+  background: var(--accent-color);
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+.ver-pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ver-pagination-info {
+  font-size: 0.9rem;
+  color: var(--text-label);
+  font-weight: 500;
+  flex: 1;
+  text-align: center;
+}
+
+/* -- Responsive -- */
 @media (max-width: 640px) {
   .ver-page {
     padding: 0;
@@ -336,6 +444,16 @@ body.dark-theme {
     width: 100%;
   }
 
+  .ver-filters-bar {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 0.75rem 1rem;
+  }
+
+  .ver-filter-group select {
+    width: 100%;
+  }
+
   .ver-summary {
     grid-template-columns: repeat(2, 1fr);
     gap: 8px;
@@ -351,36 +469,59 @@ body.dark-theme {
 
   .ver-table {
     width: 100%;
-    min-width: 600px;
+    min-width: 750px;
   }
 
   .ver-table th:nth-child(1),
   .ver-table td:nth-child(1) {
-    width: 130px;
+    width: 120px;
   }
 
   .ver-table th:nth-child(2),
   .ver-table td:nth-child(2) {
-    width: 100px;
+    width: 85px;
   }
 
   .ver-table th:nth-child(3),
   .ver-table td:nth-child(3) {
-    width: 120px;
+    width: 110px;
   }
 
   .ver-table th:nth-child(4),
   .ver-table td:nth-child(4) {
-    width: 100px;
+    width: 85px;
   }
 
   .ver-table th:nth-child(5),
   .ver-table td:nth-child(5) {
-    width: 150px;
+    width: 140px;
+  }
+
+  .ver-table th:nth-child(6),
+  .ver-table td:nth-child(6) {
+    width: 60px;
+    text-align: center;
   }
 
   .ver-table th,
   .ver-table td {
     padding: 10px;
+  }
+
+  .ver-pagination {
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .ver-pagination-btn {
+    width: 100%;
+    padding: 12px;
+    font-size: 0.85rem;
+  }
+
+  .ver-pagination-info {
+    font-size: 0.85rem;
+    width: 100%;
   }
 }

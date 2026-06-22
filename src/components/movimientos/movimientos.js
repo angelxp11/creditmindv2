@@ -26,6 +26,8 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [selectedCuentaId, setSelectedCuentaId] = useState("");
+  const [historial, setHistorial] = useState([]);
+  const [sugerencia, setSugerencia] = useState(null);
 
   React.useEffect(() => {
     const fetchAccounts = async () => {
@@ -47,6 +49,24 @@ const Movimientos = ({ isOpen, onClose }) => {
             return bTime - aTime;
           });
         setAccounts(accountDocs);
+        
+        // Seleccionar la cuenta predeterminada
+        const defaultAccount = accountDocs.find((c) => c.esDefault);
+        if (defaultAccount) {
+          setSelectedCuentaId(defaultAccount.id);
+        }
+
+        // Cargar historial de movimientos
+        const movimientosQuery = query(
+          collection(db, "movimientos"),
+          where("userId", "==", user.uid)
+        );
+        const movimientosSnapshot = await getDocs(movimientosQuery);
+        const historialMovimientos = movimientosSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setHistorial(historialMovimientos);
       } catch (error) {
         console.error("Error cargando cuentas:", error);
         showToast("No se pudieron cargar las cuentas", "error");
@@ -76,15 +96,78 @@ const Movimientos = ({ isOpen, onClose }) => {
     return num < 0 ? `-${abs}` : abs;
   };
 
-  const handleChange = (event) => {
-    const { name, value } = event.target;
-    if (name === "valor") {
-      setFormValues((prev) => ({
-        ...prev,
-        valor: value ? formatMoneyInput(value) : "",
-      }));
+  /* ── Función para obtener sugerencias ── */
+  const obtenerSugerencia = (establecimiento, valor) => {
+    if (!establecimiento || !valor) {
+      setSugerencia(null);
       return;
     }
+
+    const numero = Number(String(valor).replace(/\./g, ""));
+
+    const similares = historial.filter((mov) => {
+      const nombreActual = establecimiento.toUpperCase();
+      const nombreGuardado = mov.establecimiento?.toUpperCase() || "";
+      const coincideNombre = nombreGuardado.includes(nombreActual);
+      const coincideValor = Math.abs(mov.valor - numero) <= 10000;
+      return coincideNombre && coincideValor;
+    });
+
+    if (similares.length === 0) {
+      setSugerencia(null);
+      return;
+    }
+
+    const frecuenciaTags = {};
+    similares.forEach((m) => {
+      (m.tags || []).forEach((tag) => {
+        frecuenciaTags[tag] = (frecuenciaTags[tag] || 0) + 1;
+      });
+    });
+
+    const tagsOrdenados = Object.entries(frecuenciaTags)
+      .sort((a, b) => b[1] - a[1])
+      .map((item) => item[0]);
+
+    setSugerencia({
+      establecimiento: similares[0].establecimiento.toUpperCase(),
+      tags: tagsOrdenados,
+      confianza: Math.min(
+        99,
+        Math.round((similares.length / historial.length) * 300)
+      ),
+    });
+  };
+
+  const handleChange = (event) => {
+    const { name, value } = event.target;
+
+    if (name === "valor") {
+      const valorFormateado = value ? formatMoneyInput(value) : "";
+      setFormValues((prev) => {
+        const nuevo = {
+          ...prev,
+          valor: valorFormateado,
+        };
+        obtenerSugerencia(nuevo.establecimiento, nuevo.valor);
+        return nuevo;
+      });
+      return;
+    }
+
+    if (name === "establecimiento") {
+      const mayuscula = value.toUpperCase();
+      setFormValues((prev) => {
+        const nuevo = {
+          ...prev,
+          establecimiento: mayuscula,
+        };
+        obtenerSugerencia(nuevo.establecimiento, nuevo.valor);
+        return nuevo;
+      });
+      return;
+    }
+
     setFormValues((prev) => ({ ...prev, [name]: value }));
   };
 
@@ -109,7 +192,7 @@ const Movimientos = ({ isOpen, onClose }) => {
     event.preventDefault();
 
     const valor = Number(formValues.valor.replace(/\./g, ""));
-    const establecimiento = formValues.establecimiento.trim();
+    const establecimiento = formValues.establecimiento.trim().toUpperCase();
     const fechaHora = new Date();
     const finalTags = tagInput.trim()
       ? [...tags, tagInput.trim()]
@@ -144,11 +227,31 @@ const Movimientos = ({ isOpen, onClose }) => {
         fechaCreacion: serverTimestamp(),
       });
 
+      // Actualizar estado local de la cuenta para reflejar el nuevo saldo
+      setAccounts((prev) =>
+        prev.map((cuenta) =>
+          cuenta.id === selectedCuentaId
+            ? { ...cuenta, saldo: cuenta.saldo - valor }
+            : cuenta
+        )
+      );
+
+      // Actualizar historial local
+      setHistorial((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          establecimiento,
+          valor,
+          tags: finalTags,
+        },
+      ]);
+
       showToast("Movimiento registrado correctamente", "success");
       setFormValues(initialForm);
       setTags([]);
       setTagInput("");
-      setSelectedCuentaId("");
+      setSugerencia(null);
       // Mantener modal abierto: no llamar a onClose()
     } catch (error) {
       console.error("Error guardando movimiento:", error);
@@ -222,6 +325,40 @@ const Movimientos = ({ isOpen, onClose }) => {
               onChange={handleChange}
               placeholder="Nombre del comercio"
             />
+
+            {/* Sugerencia */}
+            {sugerencia && (
+              <div className="mov-suggestion">
+                <div className="mov-suggestion-header">
+                  <strong>🏪 {sugerencia.establecimiento}</strong>
+                </div>
+                <div className="mov-suggestion-tags">
+                  <span className="mov-suggestion-label">Tags sugeridos:</span>
+                  {sugerencia.tags.map((tag) => (
+                    <span key={tag} className="mov-tag-chip">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <div className="mov-suggestion-confidence">
+                  📈 Confianza: {sugerencia.confianza}%
+                </div>
+                <button
+                  type="button"
+                  className="mov-apply-suggestion"
+                  onClick={() => {
+                    setFormValues((prev) => ({
+                      ...prev,
+                      establecimiento: sugerencia.establecimiento,
+                    }));
+                    setTags(sugerencia.tags);
+                    setTagInput("");
+                  }}
+                >
+                  ✓ Aplicar sugerencia
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Tags */}

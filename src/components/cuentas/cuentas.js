@@ -178,6 +178,48 @@ const Cuentas = ({ isOpen, onClose }) => {
 });
   };
 
+  const handleSetDefault = async (account) => {
+    const user = auth.currentUser;
+    if (!user) {
+      showToast("No hay un usuario autenticado", "error");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Quitarle esDefault a todas las cuentas del usuario
+      const allAccountsQuery = query(
+        collection(db, "cuentas"),
+        where("usuarioId", "==", user.uid)
+      );
+      const allAccountsSnap = await getDocs(allAccountsQuery);
+      for (const doc of allAccountsSnap.docs) {
+        if (doc.id !== account.id) {
+          await updateDoc(doc.ref, { esDefault: false });
+        }
+      }
+
+      // Establecer como default
+      const accountRef = doc(db, "cuentas", account.id);
+      await updateDoc(accountRef, { esDefault: true });
+
+      // Actualizar estado local
+      setAccounts((prev) =>
+        prev.map((acc) => ({
+          ...acc,
+          esDefault: acc.id === account.id,
+        }))
+      );
+
+      showToast("Cuenta predeterminada actualizada", "success");
+    } catch (error) {
+      console.error("Error al establecer cuenta predeterminada:", error);
+      showToast("No se pudo establecer la cuenta predeterminada", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!isOpen) {
     return null;
   }
@@ -250,16 +292,26 @@ const Cuentas = ({ isOpen, onClose }) => {
                   <th>Banco</th>
                   <th>Nombre</th>
                   <th>Saldo</th>
+                  <th>Predeterminada</th>
                   <th>Acción</th>
                 </tr>
               </thead>
               <tbody>
                 {accounts.map((account) => (
                   <tr key={account.id}>
-                    
                     <td>{account.banco}</td>
                     <td>{account.nombre}</td>
                     <td>${Number(account.saldo || 0).toLocaleString("es-CO")}</td>
+                    <td>
+                      <button
+                        className={`cuentas-default ${account.esDefault ? "cuentas-default--active" : ""}`}
+                        type="button"
+                        onClick={() => handleSetDefault(account)}
+                        title={account.esDefault ? "Es la cuenta predeterminada" : "Establecer como predeterminada"}
+                      >
+                        {account.esDefault ? "✓" : "○"}
+                      </button>
+                    </td>
                     <td>
                       <button
                         className="cuentas-edit"

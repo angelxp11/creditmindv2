@@ -5,6 +5,9 @@ import {
   query,
   where,
   getDocs,
+  deleteDoc,
+  doc,
+  updateDoc,
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
@@ -61,6 +64,12 @@ const VerMovimientos = ({ isOpen, onClose }) => {
 
   const [debts, setDebts] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  // Paginación y filtros
+  const [currentPage, setCurrentPage] = useState(1);
+  const [filterPeriod, setFilterPeriod] = useState("todos");
+  const [filterType, setFilterType] = useState("todos");
+  const itemsPerPage = 10;
 
   /* ── Cargar cuentas al abrir ── */
   useEffect(() => {
@@ -186,22 +195,129 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       );
   }, [movementsById, movementsByUsuarioId]);
 
+  /* ── Filtrar por período ── */
+  const isWithinPeriod = (movimiento, period) => {
+    const now = new Date();
+    const movDate = movimiento.fechaHora?.toDate
+      ? movimiento.fechaHora.toDate()
+      : new Date(movimiento.fechaHora);
+
+    if (period === "todos") return true;
+
+    const diffMs = now - movDate;
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+    switch (period) {
+      case "semanal":
+        return diffDays <= 7;
+      case "quincenal":
+        return diffDays <= 15;
+      case "mensual":
+        return diffDays <= 30;
+      default:
+        return true;
+    }
+  };
+
+  /* ── Filtrar por tipo ── */
+  const matchesTypeFilter = (movimiento) => {
+    if (filterType === "todos") return true;
+    if (filterType === "ingreso") return isIngreso(movimiento);
+    if (filterType === "egreso") return !isIngreso(movimiento) && !isPagoDeuda(movimiento);
+    if (filterType === "deuda") return isPagoDeuda(movimiento);
+    return true;
+  };
+
+  /* ── Movimientos filtrados y paginados ── */
+  const filteredMovements = React.useMemo(() => {
+    return allMovements.filter(
+      (m) => isWithinPeriod(m, filterPeriod) && matchesTypeFilter(m)
+    );
+  }, [allMovements, filterPeriod, filterType]);
+
+  /* ── Paginación ── */
+  const totalPages = Math.ceil(filteredMovements.length / itemsPerPage);
+  const validPage = Math.min(currentPage, Math.max(1, totalPages));
+  const startIdx = (validPage - 1) * itemsPerPage;
+  const paginatedMovements = filteredMovements.slice(
+    startIdx,
+    startIdx + itemsPerPage
+  );
+
+  /* ── Resetear página al cambiar filtros ── */
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [filterPeriod, filterType, selectedCuentaId]);
+
   /* ── Cálculos resumen ── */
   const cuentaActual = accounts.find((c) => c.id === selectedCuentaId);
 
-  const totalEgresos = allMovements.reduce(
+  const totalEgresos = filteredMovements.reduce(
     (acc, m) => acc + (!isIngreso(m) ? getNumber(m.valor) : 0),
     0
   );
-  const totalIngresos = allMovements.reduce(
+  const totalIngresos = filteredMovements.reduce(
     (acc, m) => acc + (isIngreso(m) ? getNumber(m.valor) : 0),
     0
   );
-  const cantMovimientos = allMovements.length;
+  const cantMovimientos = filteredMovements.length;
   const totalDeudas = debts.reduce(
     (acc, d) => acc + getNumber(d.montoRestante ?? d.monto),
     0
   );
+
+  /* ── Eliminar movimiento ── */
+  const handleDeleteMovimiento = async (movimiento) => {
+    const confirmDelete = window.confirm(
+      `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
+    );
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    try {
+      // 1. Obtener la cuenta actual del estado local
+      const cuentaActual = accounts.find((c) => c.id === selectedCuentaId);
+      if (!cuentaActual) {
+        showToast("No se encontró la cuenta", "error");
+        return;
+      }
+
+      const nuevoSaldo = cuentaActual.saldo + movimiento.valor;
+
+      // 2. Actualizar el saldo de la cuenta en Firestore
+      const cuentaRef = doc(db, "cuentas", selectedCuentaId);
+
+      // 2. Actualizar el saldo de la cuenta
+      await updateDoc(cuentaRef, {
+        saldo: nuevoSaldo,
+        ultimaActualizacion: new Date(),
+      });
+
+      // 3. Eliminar el movimiento
+      await deleteDoc(doc(db, "movimientos", movimiento.id));
+
+      // 4. Actualizar estado local
+      setAccounts((prev) =>
+        prev.map((c) =>
+          c.id === selectedCuentaId ? { ...c, saldo: nuevoSaldo } : c
+        )
+      );
+
+      // 5. Actualizar lista de movimientos
+      if (movimiento._source === "userId") {
+        setMovementsById((prev) => prev.filter((m) => m.id !== movimiento.id));
+      } else {
+        setMovementsByUsuarioId((prev) => prev.filter((m) => m.id !== movimiento.id));
+      }
+
+      showToast("Movimiento eliminado correctamente", "success");
+    } catch (error) {
+      console.error("Error al eliminar movimiento:", error);
+      showToast("No se pudo eliminar el movimiento", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -240,6 +356,39 @@ const VerMovimientos = ({ isOpen, onClose }) => {
             ))}
           </select>
         </div>
+
+        {/* CONTROLES DE FILTRO */}
+        {selectedCuentaId && (
+          <div className="ver-filters-bar">
+            <div className="ver-filter-group">
+              <label>Período</label>
+              <select
+                className="ver-select"
+                value={filterPeriod}
+                onChange={(e) => setFilterPeriod(e.target.value)}
+              >
+                <option value="todos">Todos</option>
+                <option value="semanal">Últimos 7 días</option>
+                <option value="quincenal">Últimos 15 días</option>
+                <option value="mensual">Últimos 30 días</option>
+              </select>
+            </div>
+
+            <div className="ver-filter-group">
+              <label>Tipo</label>
+              <select
+                className="ver-select"
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+              >
+                <option value="todos">Todos</option>
+                <option value="ingreso">Ingresos</option>
+                <option value="egreso">Egresos</option>
+                <option value="deuda">Pagos de deudas</option>
+              </select>
+            </div>
+          </div>
+        )}
 
         {/* TARJETAS RESUMEN */}
         {selectedCuentaId && (
@@ -304,68 +453,104 @@ const VerMovimientos = ({ isOpen, onClose }) => {
               </svg>
               <span>Selecciona una cuenta para ver los movimientos.</span>
             </div>
-          ) : allMovements.length === 0 ? (
+          ) : filteredMovements.length === 0 ? (
             <div className="ver-empty">
               <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4">
                 <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
                 <rect x="9" y="3" width="6" height="4" rx="1" />
                 <path d="M9 12h6M9 16h4" />
               </svg>
-              <span>No hay movimientos para esta cuenta.</span>
+              <span>No hay movimientos que coincidan con los filtros seleccionados.</span>
             </div>
           ) : (
-            <table className="ver-table">
-              <thead>
-                <tr>
-                  <th>Fecha y hora</th>
-                  <th>Valor</th>
-                  <th>Concepto</th>
-                  <th>Tipo</th>
-                  <th>Tags</th>
-                </tr>
-              </thead>
-              <tbody>
-                {allMovements.map((m) => (
-                  <tr key={`${m._source}-${m.id}`}>
-                    <td>{formatDateTime(m.fechaHora)}</td>
-                    <td>
-                      {isIngreso(m) ? (
-                        <span className="ver-valor ver-valor--ingreso">
-                          +${formatMoney(m.valor)}
-                        </span>
-                      ) : (
-                        <span className="ver-valor ver-valor--egreso">
-                          −${formatMoney(m.valor)}
-                        </span>
-                      )}
-                    </td>
-                    <td>{m.establecimiento || m.descripcion || "−"}</td>
-                    <td>
-                      {isPagoDeuda(m) ? (
-                        <span className="ver-tag-badge ver-tag-badge--deuda">
-                          Pago deuda
-                        </span>
-                      ) : isIngreso(m) ? (
-                        <span className="ver-tag-badge ver-tag-badge--ingreso">
-                          Ingreso
-                        </span>
-                      ) : (
-                        <span className="ver-tag-badge ver-tag-badge--egreso">
-                          Egreso
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {(m.tags || []).map((tag, i) => (
-                        <span key={i} className="ver-tag-badge">
-                          {tag}
-                        </span>
-                      ))}
-                    </td>
+            <>
+              <table className="ver-table">
+                <thead>
+                  <tr>
+                    <th>Fecha y hora</th>
+                    <th>Valor</th>
+                    <th>Concepto</th>
+                    <th>Tipo</th>
+                    <th>Tags</th>
+                    <th>Acción</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {paginatedMovements.map((m) => (
+                    <tr key={`${m._source}-${m.id}`}>
+                      <td>{formatDateTime(m.fechaHora)}</td>
+                      <td>
+                        {isIngreso(m) ? (
+                          <span className="ver-valor ver-valor--ingreso">
+                            +${formatMoney(m.valor)}
+                          </span>
+                        ) : (
+                          <span className="ver-valor ver-valor--egreso">
+                            −${formatMoney(m.valor)}
+                          </span>
+                        )}
+                      </td>
+                      <td>{m.establecimiento || m.descripcion || "−"}</td>
+                      <td>
+                        {isPagoDeuda(m) ? (
+                          <span className="ver-tag-badge ver-tag-badge--deuda">
+                            Pago deuda
+                          </span>
+                        ) : isIngreso(m) ? (
+                          <span className="ver-tag-badge ver-tag-badge--ingreso">
+                            Ingreso
+                          </span>
+                        ) : (
+                          <span className="ver-tag-badge ver-tag-badge--egreso">
+                            Egreso
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {(m.tags || []).map((tag, i) => (
+                          <span key={i} className="ver-tag-badge">
+                            {tag}
+                          </span>
+                        ))}
+                      </td>
+                      <td>
+                        <button
+                          className="ver-delete-btn"
+                          type="button"
+                          onClick={() => handleDeleteMovimiento(m)}
+                          title="Eliminar movimiento"
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* PAGINACIÓN */}
+              <div className="ver-pagination">
+                <button
+                  className="ver-pagination-btn"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={validPage === 1}
+                >
+                  ← Anterior
+                </button>
+
+                <div className="ver-pagination-info">
+                  Página {validPage} de {totalPages || 1} ({filteredMovements.length} movimientos)
+                </div>
+
+                <button
+                  className="ver-pagination-btn"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={validPage === totalPages}
+                >
+                  Siguiente →
+                </button>
+              </div>
+            </>
           )}
         </div>
 

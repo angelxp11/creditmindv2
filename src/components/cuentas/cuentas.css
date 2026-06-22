@@ -169,6 +169,38 @@
   transform: translateY(-1px);
 }
 
+.cuentas-default {
+  border: none;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.2s ease;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+}
+
+.cuentas-default:hover {
+  background: var(--accent-color);
+  color: white;
+  transform: translateY(-1px);
+}
+
+.cuentas-default--active {
+  background: var(--success);
+  color: white;
+}
+
+.cuentas-default--active:hover {
+  background: var(--success);
+  opacity: 0.9;
+}
+
 /* Scroll bonito */
 .cuentas-panel::-webkit-scrollbar {
   width: 8px;
