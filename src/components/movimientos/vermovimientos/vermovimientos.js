@@ -103,13 +103,15 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         );
         const docs = snap.docs
           .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((account) => (account.tipoCuenta || "gastos") === "gastos")
           .sort(
             (a, b) =>
               (b.fechaCreacion?.toMillis?.() ?? 0) -
               (a.fechaCreacion?.toMillis?.() ?? 0)
           );
         setAccounts(docs);
-        setSelectedCuentaId(docs[0]?.id || "");
+        const defaultAccount = docs.find((account) => account.esDefault);
+        setSelectedCuentaId(defaultAccount?.id || docs[0]?.id || "");
       } catch {
         showToast("No se pudieron cargar las cuentas", "error");
       } finally {
