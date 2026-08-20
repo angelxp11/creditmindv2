@@ -19,6 +19,7 @@ const initialForm = {
   banco: "",
   nombre: "",
   saldo: "",
+  tipoCuenta: "gastos",
 };
 
 const Cuentas = ({ isOpen, onClose }) => {
@@ -101,6 +102,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     event.preventDefault();
     const banco = formValues.banco.trim();
     const nombre = formValues.nombre.trim();
+    const tipoCuenta = formValues.tipoCuenta;
     const saldo = Number(
   (formValues.saldo || "").replace(/\./g, "")
 );
@@ -111,7 +113,7 @@ const Cuentas = ({ isOpen, onClose }) => {
       return;
     }
 
-    if (!banco || !nombre || Number.isNaN(saldo)) {
+    if (!banco || !nombre || !["gastos", "ahorros"].includes(tipoCuenta) || Number.isNaN(saldo)) {
       showToast("Completa todos los datos correctamente", "error");
       return;
     }
@@ -125,13 +127,14 @@ const Cuentas = ({ isOpen, onClose }) => {
           banco,
           nombre,
           saldo,
+          tipoCuenta,
           ultimaActualizacion: serverTimestamp(),
         });
 
         setAccounts((prev) =>
           prev.map((account) =>
             account.id === editingId
-              ? { ...account, banco, nombre, saldo }
+              ? { ...account, banco, nombre, saldo, tipoCuenta }
               : account
           )
         );
@@ -141,6 +144,7 @@ const Cuentas = ({ isOpen, onClose }) => {
           banco,
           nombre,
           saldo,
+          tipoCuenta,
           usuarioId: user.uid,
           fechaCreacion: serverTimestamp(),
           ultimaActualizacion: serverTimestamp(),
@@ -152,6 +156,7 @@ const Cuentas = ({ isOpen, onClose }) => {
             banco,
             nombre,
             saldo,
+            tipoCuenta,
             usuarioId: user.uid,
           },
           ...prev,
@@ -175,6 +180,7 @@ const Cuentas = ({ isOpen, onClose }) => {
   banco: account.banco,
   nombre: account.nombre,
   saldo: Number(account.saldo || 0).toLocaleString("es-CO"),
+  tipoCuenta: account.tipoCuenta || "gastos",
 });
   };
 
@@ -276,6 +282,19 @@ const Cuentas = ({ isOpen, onClose }) => {
 />
           </div>
 
+          <div className="form-group">
+            <label htmlFor="tipoCuenta">Tipo de cuenta</label>
+            <select
+              id="tipoCuenta"
+              name="tipoCuenta"
+              value={formValues.tipoCuenta}
+              onChange={handleChange}
+            >
+              <option value="gastos">Cuenta de gastos</option>
+              <option value="ahorros">Cuenta de ahorros</option>
+            </select>
+          </div>
+
           <button className="cuentas-submit" type="submit">
             {editingId ? "Actualizar cuenta" : "Crear cuenta"}
           </button>
@@ -292,6 +311,7 @@ const Cuentas = ({ isOpen, onClose }) => {
                   <th>Banco</th>
                   <th>Nombre</th>
                   <th>Saldo</th>
+                  <th>Tipo</th>
                   <th>Predeterminada</th>
                   <th>Acción</th>
                 </tr>
@@ -302,6 +322,11 @@ const Cuentas = ({ isOpen, onClose }) => {
                     <td>{account.banco}</td>
                     <td>{account.nombre}</td>
                     <td>${Number(account.saldo || 0).toLocaleString("es-CO")}</td>
+                    <td>
+                      <span className={`cuentas-type cuentas-type--${account.tipoCuenta || "gastos"}`}>
+                        {account.tipoCuenta === "ahorros" ? "Ahorros" : "Gastos"}
+                      </span>
+                    </td>
                     <td>
                       <button
                         className={`cuentas-default ${account.esDefault ? "cuentas-default--active" : ""}`}

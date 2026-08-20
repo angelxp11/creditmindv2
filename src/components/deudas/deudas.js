@@ -64,7 +64,9 @@ const Deudas = ({ isOpen, onClose }) => {
           );
         setDeudas(deudaDocs);
 
-        const cuentasDocs = cuentasSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const cuentasDocs = cuentasSnap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((cuenta) => (cuenta.tipoCuenta || "gastos") === "gastos");
         setCuentas(cuentasDocs);
       } catch (error) {
         console.error("Error cargando datos:", error);

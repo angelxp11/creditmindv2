@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
+import Filtro from "./filtro";
 import "./vermovimientos.css";
 
 /* ─── Utilidades ─────────────────────────────────────────── */
@@ -51,6 +52,20 @@ const isIngreso = (m) =>
 
 const isPagoDeuda = (m) => m.tipo === "pago_deuda";
 
+const getMovementDate = (movimiento) => {
+  const value = movimiento.fechaHora || movimiento.fechaCreacion;
+  if (!value) return null;
+  const date = value.toDate ? value.toDate() : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatDate = (value) => {
+  const date = value instanceof Date ? value : getMovementDate({ fechaHora: value });
+  return date
+    ? date.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+    : "-";
+};
+
 /* ─── Componente ─────────────────────────────────────────── */
 
 const VerMovimientos = ({ isOpen, onClose }) => {
@@ -69,6 +84,9 @@ const VerMovimientos = ({ isOpen, onClose }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [filterPeriod, setFilterPeriod] = useState("todos");
   const [filterType, setFilterType] = useState("todos");
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [selectedConcepts, setSelectedConcepts] = useState([]);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const itemsPerPage = 10;
 
   /* ── Cargar cuentas al abrir ── */
@@ -105,6 +123,9 @@ const VerMovimientos = ({ isOpen, onClose }) => {
     setMovementsByUsuarioId([]);
     setDebts([]);
     setSelectedCuentaId("");
+    setSelectedTags([]);
+    setSelectedConcepts([]);
+    setIsFilterOpen(false);
     fetchAccounts();
   }, [isOpen]);
 
@@ -219,21 +240,48 @@ const VerMovimientos = ({ isOpen, onClose }) => {
     }
   };
 
-  /* ── Filtrar por tipo ── */
-  const matchesTypeFilter = (movimiento) => {
-    if (filterType === "todos") return true;
-    if (filterType === "ingreso") return isIngreso(movimiento);
-    if (filterType === "egreso") return !isIngreso(movimiento) && !isPagoDeuda(movimiento);
-    if (filterType === "deuda") return isPagoDeuda(movimiento);
-    return true;
-  };
+  const availableTags = React.useMemo(() => {
+    const tags = new Map();
+    allMovements.forEach((movimiento) => {
+      (movimiento.tags || []).forEach((tag) => {
+        const normalizedTag = String(tag).trim();
+        if (normalizedTag) tags.set(normalizedTag.toLowerCase(), normalizedTag);
+      });
+    });
+    return [...tags.values()].sort((a, b) => a.localeCompare(b, "es"));
+  }, [allMovements]);
+
+  const availableConcepts = React.useMemo(() => {
+    const concepts = new Map();
+    allMovements.forEach((movimiento) => {
+      const concept = String(
+        movimiento.establecimiento || movimiento.descripcion || ""
+      ).trim();
+      if (concept) concepts.set(concept.toLowerCase(), concept);
+    });
+    return [...concepts.values()].sort((a, b) => a.localeCompare(b, "es"));
+  }, [allMovements]);
 
   /* ── Movimientos filtrados y paginados ── */
   const filteredMovements = React.useMemo(() => {
     return allMovements.filter(
-      (m) => isWithinPeriod(m, filterPeriod) && matchesTypeFilter(m)
+      (m) =>
+        isWithinPeriod(m, filterPeriod) &&
+        (filterType === "todos" ||
+          (filterType === "ingreso" && isIngreso(m)) ||
+          (filterType === "egreso" && !isIngreso(m) && !isPagoDeuda(m)) ||
+          (filterType === "deuda" && isPagoDeuda(m))) &&
+        (selectedTags.length === 0 || (m.tags || []).some((tag) =>
+          selectedTags.some(
+            (selectedTag) =>
+              selectedTag.toLowerCase() === String(tag).trim().toLowerCase()
+          )
+        )) &&
+        (selectedConcepts.length === 0 || selectedConcepts.includes(
+          String(m.establecimiento || m.descripcion || "").trim()
+        ))
     );
-  }, [allMovements, filterPeriod, filterType]);
+  }, [allMovements, filterPeriod, filterType, selectedTags, selectedConcepts]);
 
   /* ── Paginación ── */
   const totalPages = Math.ceil(filteredMovements.length / itemsPerPage);
@@ -247,7 +295,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
   /* ── Resetear página al cambiar filtros ── */
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [filterPeriod, filterType, selectedCuentaId]);
+  }, [filterPeriod, filterType, selectedTags, selectedConcepts, selectedCuentaId]);
 
   /* ── Cálculos resumen ── */
   const cuentaActual = accounts.find((c) => c.id === selectedCuentaId);
@@ -265,6 +313,16 @@ const VerMovimientos = ({ isOpen, onClose }) => {
     (acc, d) => acc + getNumber(d.montoRestante ?? d.monto),
     0
   );
+  const totalTagGastado = filteredMovements.reduce(
+    (acc, movimiento) => acc + (!isIngreso(movimiento) ? getNumber(movimiento.valor) : 0),
+    0
+  );
+  const movementDates = filteredMovements
+    .map(getMovementDate)
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+  const firstMovementDate = movementDates[0];
+  const lastMovementDate = movementDates[movementDates.length - 1];
 
   /* ── Eliminar movimiento ── */
   const handleDeleteMovimiento = async (movimiento) => {
@@ -345,7 +403,11 @@ const VerMovimientos = ({ isOpen, onClose }) => {
             id="cuentaSelect"
             className="ver-select"
             value={selectedCuentaId}
-            onChange={(e) => setSelectedCuentaId(e.target.value)}
+            onChange={(e) => {
+              setSelectedCuentaId(e.target.value);
+              setSelectedTags([]);
+              setSelectedConcepts([]);
+            }}
           >
             <option value="">-- Elige una cuenta --</option>
             {accounts.map((cuenta) => (
@@ -387,8 +449,38 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                 <option value="deuda">Pagos de deudas</option>
               </select>
             </div>
+
+            <div className="ver-filter-group">
+              <label>Tags y conceptos</label>
+              <button
+                className={`ver-filter-button ${selectedTags.length + selectedConcepts.length > 0 ? "ver-filter-button--active" : ""}`}
+                type="button"
+                onClick={() => setIsFilterOpen(true)}
+              >
+                {selectedTags.length + selectedConcepts.length > 0
+                  ? `${selectedTags.length + selectedConcepts.length} seleccionados`
+                  : "Abrir filtros"}
+              </button>
+            </div>
           </div>
         )}
+
+        <Filtro
+          isOpen={isFilterOpen}
+          onClose={() => setIsFilterOpen(false)}
+          availableTags={availableTags}
+          availableConcepts={availableConcepts}
+          selectedTags={selectedTags}
+          selectedConcepts={selectedConcepts}
+          onApply={(tags, concepts) => {
+            setSelectedTags(tags);
+            setSelectedConcepts(concepts);
+          }}
+          onClear={() => {
+            setSelectedTags([]);
+            setSelectedConcepts([]);
+          }}
+        />
 
         {/* TARJETAS RESUMEN */}
         {selectedCuentaId && (
@@ -432,6 +524,22 @@ const VerMovimientos = ({ isOpen, onClose }) => {
               <span className="ver-summary-card__label">Movimientos</span>
               <span className="ver-summary-card__value">{cantMovimientos}</span>
             </div>
+            {(selectedTags.length > 0 || selectedConcepts.length > 0) && (
+              <>
+                <div className="ver-summary-card ver-summary-card--tag">
+                  <span className="ver-summary-card__label">
+                    Gastado en {[...selectedTags, ...selectedConcepts].join(", ")}
+                  </span>
+                  <span className="ver-summary-card__value">${formatMoney(totalTagGastado)}</span>
+                </div>
+                <div className="ver-summary-card ver-summary-card--tag">
+                  <span className="ver-summary-card__label">Fechas filtradas</span>
+                  <span className="ver-summary-card__value ver-summary-card__value--date">
+                    {formatDate(firstMovementDate)} - {formatDate(lastMovementDate)}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         )}
 

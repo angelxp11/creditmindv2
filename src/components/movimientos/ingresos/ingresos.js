@@ -173,16 +173,17 @@ const Ingresos = ({ isOpen, onClose }) => {
           </div>
 
           <div className="ing-field ing-field--full">
-            <label className="ing-label">Descripción</label>
-            <input
-              className="ing-input"
-              name="descripcion"
-              type="text"
-              value={formValues.descripcion}
-              onChange={handleChange}
-              placeholder="Ej. Pago nómina, venta, devolución..."
-            />
-          </div>
+  <label className="ing-label">Descripción</label>
+  <input
+    className="ing-input"
+    name="descripcion"
+    type="text"
+    value={formValues.descripcion}
+    onChange={handleChange}
+    placeholder="Ej. Pago nómina, venta, devolución..."
+    style={{ textTransform: "uppercase" }}
+  />
+</div>
 
           <button className="ing-submit" type="submit">Registrar ingreso</button>
         </form>

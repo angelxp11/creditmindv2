@@ -171,10 +171,22 @@ body.dark-theme {
   color: var(--success);
 }
 
+.ver-summary-card--tag {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.ver-summary-card--tag .ver-summary-card__value {
+  color: var(--warning);
+}
+
+.ver-summary-card__value--date {
+  font-size: 13px;
+}
+
 /* ── Filtros ── */
 .ver-filters-bar {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   padding: 1rem 1.75rem 0.75rem;
   background: var(--bg-primary);
@@ -212,6 +224,26 @@ body.dark-theme {
   outline: none;
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.1);
+}
+
+.ver-filter-button {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--text-label);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.ver-filter-button:hover,
+.ver-filter-button--active {
+  border-color: var(--accent-color);
+  background: var(--accent-bg);
+  color: var(--accent-color);
 }
 
 /* ── Lista / tabla ── */

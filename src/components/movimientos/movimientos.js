@@ -17,6 +17,17 @@ import "./movimientos.css";
 const initialForm = {
   valor: "",
   establecimiento: "",
+  fechaHora: "",
+};
+
+const initialBudget = {
+  fechaProgramada: "",
+};
+
+const getCurrentDateTimeValue = () => {
+  const now = new Date();
+  const timezoneOffset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - timezoneOffset).toISOString().slice(0, 16);
 };
 
 const Movimientos = ({ isOpen, onClose }) => {
@@ -28,6 +39,10 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [selectedCuentaId, setSelectedCuentaId] = useState("");
   const [historial, setHistorial] = useState([]);
   const [sugerencia, setSugerencia] = useState(null);
+  const [mode, setMode] = useState("pago");
+  const [usePreviousDate, setUsePreviousDate] = useState(false);
+  const [budgetForm, setBudgetForm] = useState(initialBudget);
+  const [budgets, setBudgets] = useState([]);
 
   React.useEffect(() => {
     const fetchAccounts = async () => {
@@ -51,10 +66,25 @@ const Movimientos = ({ isOpen, onClose }) => {
         setAccounts(accountDocs);
         
         // Seleccionar la cuenta predeterminada
-        const defaultAccount = accountDocs.find((c) => c.esDefault);
+        const spendableAccounts = accountDocs.filter(
+          (account) => (account.tipoCuenta || "gastos") === "gastos"
+        );
+        const defaultAccount = spendableAccounts.find((c) => c.esDefault);
         if (defaultAccount) {
           setSelectedCuentaId(defaultAccount.id);
+        } else if (spendableAccounts[0]) {
+          setSelectedCuentaId(spendableAccounts[0].id);
         }
+
+        const budgetsSnapshot = await getDocs(
+          query(collection(db, "presupuestos"), where("usuarioId", "==", user.uid))
+        );
+        setBudgets(
+          budgetsSnapshot.docs
+            .map((budgetDoc) => ({ id: budgetDoc.id, ...budgetDoc.data() }))
+            .filter((budget) => budget.estado === "pendiente")
+            .sort((a, b) => String(a.fechaProgramada).localeCompare(String(b.fechaProgramada)))
+        );
 
         // Cargar historial de movimientos
         const movimientosQuery = query(
@@ -76,10 +106,14 @@ const Movimientos = ({ isOpen, onClose }) => {
     };
 
     if (isOpen) {
-      setFormValues(initialForm);
+      setFormValues({ ...initialForm, fechaHora: getCurrentDateTimeValue() });
       setTags([]);
       setTagInput("");
       setSelectedCuentaId("");
+      setMode("pago");
+      setUsePreviousDate(false);
+      setBudgetForm(initialBudget);
+      setBudgets([]);
       fetchAccounts();
     }
   }, [isOpen]);
@@ -188,12 +222,128 @@ const Movimientos = ({ isOpen, onClose }) => {
     setTags((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const getAvailableBalance = (accountId) => {
+    const account = accounts.find((item) => item.id === accountId);
+    const reserved = budgets
+      .filter((budget) => budget.cuentaId === accountId)
+      .reduce((total, budget) => total + Number(budget.valor || 0), 0);
+    return Number(account?.saldo || 0) - reserved;
+  };
+
+  const resetForm = () => {
+    setFormValues({ ...initialForm, fechaHora: getCurrentDateTimeValue() });
+    setTags([]);
+    setTagInput("");
+    setSugerencia(null);
+    setUsePreviousDate(false);
+    setBudgetForm(initialBudget);
+  };
+
+  const handleCreateBudget = async () => {
+    const valor = Number(formValues.valor.replace(/\./g, ""));
+    const establecimiento = formValues.establecimiento.trim().toUpperCase();
+    const user = auth.currentUser;
+
+    if (!user) { showToast("Necesitas iniciar sesión", "error"); return; }
+    if (!selectedCuentaId) { showToast("Selecciona una cuenta para presupuestar", "error"); return; }
+    if (!valor || !establecimiento || !budgetForm.fechaProgramada) {
+      showToast("Completa el valor, establecimiento y fecha", "error"); return;
+    }
+
+    const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
+    if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
+    if ((cuentaSeleccionada.tipoCuenta || "gastos") !== "gastos") {
+      showToast("Las cuentas de ahorros son una alcancía y no se pueden usar para pagos", "error"); return;
+    }
+    if (valor > getAvailableBalance(selectedCuentaId)) {
+      showToast("El presupuesto supera el saldo disponible después de las reservas", "error"); return;
+    }
+
+    setLoading(true);
+    try {
+      const budgetData = {
+        usuarioId: user.uid,
+        cuentaId: selectedCuentaId,
+        cuentaBanco: cuentaSeleccionada.banco,
+        cuentaNombre: cuentaSeleccionada.nombre,
+        valor,
+        establecimiento,
+        tags: tagInput.trim() ? [...tags, tagInput.trim()] : tags,
+        fechaProgramada: budgetForm.fechaProgramada,
+        estado: "pendiente",
+        fechaCreacion: serverTimestamp(),
+      };
+      const budgetRef = await addDoc(collection(db, "presupuestos"), budgetData);
+      setBudgets((prev) => [{ id: budgetRef.id, ...budgetData }, ...prev]);
+      showToast("Presupuesto guardado. El saldo no ha cambiado", "success");
+      resetForm();
+    } catch (error) {
+      console.error("Error guardando presupuesto:", error);
+      showToast("No se pudo guardar el presupuesto", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAcceptBudget = async (budget) => {
+    const cuentaSeleccionada = accounts.find((c) => c.id === budget.cuentaId);
+    if (!cuentaSeleccionada) { showToast("La cuenta del presupuesto ya no existe", "error"); return; }
+    if ((cuentaSeleccionada.tipoCuenta || "gastos") !== "gastos") {
+      showToast("Este presupuesto pertenece a una cuenta de ahorros", "error"); return;
+    }
+    if (Number(budget.valor) > Number(cuentaSeleccionada.saldo || 0)) {
+      showToast("Saldo insuficiente para aceptar este presupuesto", "error"); return;
+    }
+
+    setLoading(true);
+    try {
+      const nuevoSaldo = Number(cuentaSeleccionada.saldo || 0) - Number(budget.valor);
+      await updateDoc(doc(db, "cuentas", budget.cuentaId), {
+        saldo: nuevoSaldo,
+        ultimaActualizacion: serverTimestamp(),
+      });
+      await addDoc(collection(db, "movimientos"), {
+        userId: auth.currentUser.uid,
+        usuarioId: auth.currentUser.uid,
+        cuentaId: budget.cuentaId,
+        cuentaBanco: cuentaSeleccionada.banco,
+        cuentaNombre: cuentaSeleccionada.nombre,
+        valor: Number(budget.valor),
+        establecimiento: budget.establecimiento,
+        tags: budget.tags || [],
+        fechaHora: new Date(),
+        fechaCreacion: serverTimestamp(),
+      });
+      await updateDoc(doc(db, "presupuestos", budget.id), {
+        estado: "aceptado",
+        fechaAceptacion: serverTimestamp(),
+      });
+      setAccounts((prev) => prev.map((account) =>
+        account.id === budget.cuentaId ? { ...account, saldo: nuevoSaldo } : account
+      ));
+      setBudgets((prev) => prev.filter((item) => item.id !== budget.id));
+      showToast("Presupuesto aceptado y pago registrado", "success");
+    } catch (error) {
+      console.error("Error aceptando presupuesto:", error);
+      showToast("No se pudo aceptar el presupuesto", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
+    if (mode === "presupuesto") {
+      await handleCreateBudget();
+      return;
+    }
+
     const valor = Number(formValues.valor.replace(/\./g, ""));
     const establecimiento = formValues.establecimiento.trim().toUpperCase();
-    const fechaHora = new Date();
+    const fechaHora = usePreviousDate
+      ? new Date(formValues.fechaHora)
+      : new Date();
     const finalTags = tagInput.trim()
       ? [...tags, tagInput.trim()]
       : tags;
@@ -202,10 +352,21 @@ const Movimientos = ({ isOpen, onClose }) => {
     if (!user) { showToast("Necesitas iniciar sesión", "error"); return; }
     if (!selectedCuentaId) { showToast("Selecciona una cuenta para pagar", "error"); return; }
     if (!valor || !establecimiento) { showToast("Completa todos los campos del movimiento", "error"); return; }
+    if (usePreviousDate && (!formValues.fechaHora || Number.isNaN(fechaHora.getTime()))) {
+      showToast("Selecciona una fecha y hora válidas", "error"); return;
+    }
+    if (usePreviousDate && fechaHora > new Date()) {
+      showToast("La fecha y hora no pueden estar en el futuro", "error"); return;
+    }
 
     const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
     if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
-    if (cuentaSeleccionada.saldo < valor) { showToast("Saldo insuficiente en la cuenta seleccionada", "error"); return; }
+    if ((cuentaSeleccionada.tipoCuenta || "gastos") !== "gastos") {
+      showToast("Las cuentas de ahorros no se pueden usar para pagos", "error"); return;
+    }
+    if (valor > getAvailableBalance(selectedCuentaId)) {
+      showToast("Saldo disponible insuficiente: hay dinero reservado en presupuestos", "error"); return;
+    }
 
     setLoading(true);
     try {
@@ -248,10 +409,7 @@ const Movimientos = ({ isOpen, onClose }) => {
       ]);
 
       showToast("Movimiento registrado correctamente", "success");
-      setFormValues(initialForm);
-      setTags([]);
-      setTagInput("");
-      setSugerencia(null);
+      resetForm();
       // Mantener modal abierto: no llamar a onClose()
     } catch (error) {
       console.error("Error guardando movimiento:", error);
@@ -273,10 +431,31 @@ const Movimientos = ({ isOpen, onClose }) => {
         {/* HEADER */}
         <div className="mov-header">
           <div className="mov-header-text">
-            <h2>Registrar pago</h2>
-            <p>Llena los datos de la compra y pulsa Pagar.</p>
+            <h2>{mode === "pago" ? "Registrar pago" : "Crear presupuesto"}</h2>
+            <p>
+              {mode === "pago"
+                ? "Llena los datos de la compra y pulsa Pagar."
+                : "Reserva una parte de tu saldo y decide después cuándo aceptarla."}
+            </p>
           </div>
           <button className="mov-close" onClick={onClose}>Cerrar</button>
+        </div>
+
+        <div className="mov-mode-switch" role="tablist" aria-label="Modo de pago">
+          <button
+            type="button"
+            className={mode === "pago" ? "mov-mode-btn mov-mode-btn--active" : "mov-mode-btn"}
+            onClick={() => setMode("pago")}
+          >
+            Pagar ahora
+          </button>
+          <button
+            type="button"
+            className={mode === "presupuesto" ? "mov-mode-btn mov-mode-btn--active" : "mov-mode-btn"}
+            onClick={() => setMode("presupuesto")}
+          >
+            Crear presupuesto
+          </button>
         </div>
 
         {/* FORM */}
@@ -292,7 +471,7 @@ const Movimientos = ({ isOpen, onClose }) => {
               onChange={(e) => setSelectedCuentaId(e.target.value)}
             >
               <option value="">Selecciona una cuenta</option>
-              {accounts.map((cuenta) => (
+              {accounts.filter((cuenta) => (cuenta.tipoCuenta || "gastos") === "gastos").map((cuenta) => (
                 <option key={cuenta.id} value={cuenta.id}>
                   {cuenta.banco} – {cuenta.nombre} (${formatMoney(cuenta.saldo)})
                 </option>
@@ -313,6 +492,60 @@ const Movimientos = ({ isOpen, onClose }) => {
               placeholder="0"
             />
           </div>
+
+          {mode === "pago" && (
+            <div className="mov-field">
+              <label className="mov-checkbox-label" htmlFor="usePreviousDate">
+                <input
+                  id="usePreviousDate"
+                  type="checkbox"
+                  checked={usePreviousDate}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setUsePreviousDate(checked);
+                    if (checked && !formValues.fechaHora) {
+                      setFormValues((prev) => ({
+                        ...prev,
+                        fechaHora: getCurrentDateTimeValue(),
+                      }));
+                    }
+                  }}
+                />
+                <span>Registrar como pago anterior</span>
+              </label>
+
+              {usePreviousDate && (
+                <>
+                  <label className="mov-label" htmlFor="fechaHora">
+                    Fecha y hora del pago
+                  </label>
+                  <input
+                    id="fechaHora"
+                    className="mov-input"
+                    name="fechaHora"
+                    type="datetime-local"
+                    max={getCurrentDateTimeValue()}
+                    value={formValues.fechaHora}
+                    onChange={handleChange}
+                  />
+                </>
+              )}
+            </div>
+          )}
+
+          {mode === "presupuesto" && (
+            <div className="mov-field">
+              <label className="mov-label" htmlFor="fechaProgramada">Fecha programada</label>
+              <input
+                id="fechaProgramada"
+                className="mov-input"
+                type="date"
+                min={new Date().toISOString().slice(0, 10)}
+                value={budgetForm.fechaProgramada}
+                onChange={(event) => setBudgetForm({ fechaProgramada: event.target.value })}
+              />
+            </div>
+          )}
 
           {/* Establecimiento */}
           <div className="mov-field mov-field--full">
@@ -393,9 +626,40 @@ const Movimientos = ({ isOpen, onClose }) => {
           </div>
 
           <button className="mov-submit" type="submit">
-            Pagar
+            {mode === "pago" ? "Pagar" : "Guardar presupuesto"}
           </button>
         </form>
+
+        {budgets.length > 0 && (
+          <section className="mov-budgets" aria-labelledby="budgets-title">
+            <div className="mov-budgets__heading">
+              <div>
+                <h3 id="budgets-title">Presupuestos pendientes</h3>
+                <p>El saldo se descuenta únicamente al aceptar.</p>
+              </div>
+              <span className="mov-budgets__count">{budgets.length}</span>
+            </div>
+            <div className="mov-budgets__list">
+              {budgets.map((budget) => (
+                <article className="mov-budget" key={budget.id}>
+                  <div>
+                    <strong>{budget.establecimiento}</strong>
+                    <span>
+                      ${formatMoney(budget.valor)} · {budget.cuentaNombre} · {budget.fechaProgramada}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="mov-budget__accept"
+                    onClick={() => handleAcceptBudget(budget)}
+                  >
+                    Aceptar y pagar
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
 
       </div>
     </div>
