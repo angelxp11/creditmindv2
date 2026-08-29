@@ -24,6 +24,15 @@ const initialBudget = {
   fechaProgramada: "",
 };
 
+const normalizeTags = (list = []) => {
+  const values = Array.isArray(list) ? list : [];
+  return [...new Set(
+    values
+      .map((tag) => String(tag).trim().replace(/,$/, "").toUpperCase())
+      .filter(Boolean)
+  )];
+};
+
 const getCurrentDateTimeValue = () => {
   const now = new Date();
   const timezoneOffset = now.getTimezoneOffset() * 60000;
@@ -208,9 +217,9 @@ const Movimientos = ({ isOpen, onClose }) => {
   const handleTagKeyDown = (e) => {
     if ((e.key === " " || e.key === "," || e.key === "Enter") && tagInput.trim()) {
       e.preventDefault();
-      const newTag = tagInput.trim().replace(/,$/, "");
-      if (newTag && !tags.includes(newTag)) {
-        setTags((prev) => [...prev, newTag]);
+      const newTag = tagInput.trim().replace(/,$/, "").toUpperCase();
+      if (newTag) {
+        setTags((prev) => normalizeTags([...prev, newTag]));
       }
       setTagInput("");
     } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
@@ -243,6 +252,7 @@ const Movimientos = ({ isOpen, onClose }) => {
     const valor = Number(formValues.valor.replace(/\./g, ""));
     const establecimiento = formValues.establecimiento.trim().toUpperCase();
     const user = auth.currentUser;
+    const finalTags = normalizeTags(tagInput.trim() ? [...tags, tagInput.trim()] : tags);
 
     if (!user) { showToast("Necesitas iniciar sesión", "error"); return; }
     if (!selectedCuentaId) { showToast("Selecciona una cuenta para presupuestar", "error"); return; }
@@ -268,7 +278,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         cuentaNombre: cuentaSeleccionada.nombre,
         valor,
         establecimiento,
-        tags: tagInput.trim() ? [...tags, tagInput.trim()] : tags,
+        tags: finalTags,
         fechaProgramada: budgetForm.fechaProgramada,
         estado: "pendiente",
         fechaCreacion: serverTimestamp(),
@@ -344,9 +354,7 @@ const Movimientos = ({ isOpen, onClose }) => {
     const fechaHora = usePreviousDate
       ? new Date(formValues.fechaHora)
       : new Date();
-    const finalTags = tagInput.trim()
-      ? [...tags, tagInput.trim()]
-      : tags;
+    const finalTags = normalizeTags(tagInput.trim() ? [...tags, tagInput.trim()] : tags);
 
     const user = auth.currentUser;
     if (!user) { showToast("Necesitas iniciar sesión", "error"); return; }
@@ -584,7 +592,7 @@ const Movimientos = ({ isOpen, onClose }) => {
                       ...prev,
                       establecimiento: sugerencia.establecimiento,
                     }));
-                    setTags(sugerencia.tags);
+                    setTags(normalizeTags(sugerencia.tags));
                     setTagInput("");
                   }}
                 >

@@ -1,17 +1,17 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import "./theme.css";
 
-const Theme = () => {
-  const getSystemTheme = () =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
+const getSystemTheme = () =>
+  window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
 
+const Theme = () => {
   const [theme, setTheme] = useState(
     localStorage.getItem("theme") || "system"
   );
 
-  const applyTheme = (selectedTheme) => {
+  const applyTheme = useCallback((selectedTheme) => {
     const finalTheme =
       selectedTheme === "system"
         ? getSystemTheme()
@@ -27,7 +27,7 @@ const Theme = () => {
     );
 
     localStorage.setItem("theme", selectedTheme);
-  };
+  }, []);
 
   const handleThemeChange = (newTheme) => {
     setTheme(newTheme);
@@ -52,7 +52,7 @@ const Theme = () => {
         "change",
         handleChange
       );
-  }, [theme]);
+  }, [theme, applyTheme]);
 
   return (
     <div className="theme-container">

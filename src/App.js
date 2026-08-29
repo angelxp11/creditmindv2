@@ -9,6 +9,7 @@ import PQR from "./components/pqr/pqr";
 import Cuentas from "./components/cuentas/cuentas";
 import Deudas from "./components/deudas/deudas";
 import Movimientos from "./components/movimientos/movimientos";
+import Presupuesto from "./components/movimientos/presupuesto/presupuesto";
 import VerMovimientos from "./components/movimientos/vermovimientos/vermovimientos";
 import Ingresos from "./components/movimientos/ingresos/ingresos";
 
@@ -25,6 +26,7 @@ function App() {
   const [showCuentas, setShowCuentas] = useState(false);
   const [showDeudas, setShowDeudas] = useState(false);
   const [showMovimientos, setShowMovimientos] = useState(false);
+  const [showPresupuesto, setShowPresupuesto] = useState(false);
   const [showVerMovimientos, setShowVerMovimientos] = useState(false);
   const [showIngresos, setShowIngresos] = useState(false);
 
@@ -87,6 +89,15 @@ function App() {
             }}
             onOpenMovimientos={() => {
               setShowMovimientos(true);
+              setShowPresupuesto(false);
+              setShowCuentas(false);
+              setShowDeudas(false);
+              setShowVerMovimientos(false);
+              setShowIngresos(false);
+            }}
+            onOpenPresupuesto={() => {
+              setShowPresupuesto(true);
+              setShowMovimientos(false);
               setShowCuentas(false);
               setShowDeudas(false);
               setShowVerMovimientos(false);
@@ -94,6 +105,7 @@ function App() {
             }}
             onOpenIngresos={() => {
               setShowIngresos(true);
+              setShowPresupuesto(false);
               setShowCuentas(false);
               setShowDeudas(false);
               setShowMovimientos(false);
@@ -101,6 +113,7 @@ function App() {
             }}
             onOpenVerMovimientos={() => {
               setShowVerMovimientos(true);
+              setShowPresupuesto(false);
               setShowCuentas(false);
               setShowDeudas(false);
               setShowMovimientos(false);
@@ -110,6 +123,7 @@ function App() {
               setShowCuentas(false);
               setShowDeudas(false);
               setShowMovimientos(false);
+              setShowPresupuesto(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
             }}
@@ -130,6 +144,11 @@ function App() {
             onClose={() => setShowMovimientos(false)}
           />
 
+          <Presupuesto
+            isOpen={showPresupuesto}
+            onClose={() => setShowPresupuesto(false)}
+          />
+
           <Ingresos
             isOpen={showIngresos}
             onClose={() => setShowIngresos(false)}
@@ -143,6 +162,7 @@ function App() {
           {!showCuentas &&
             !showDeudas &&
             !showMovimientos &&
+            !showPresupuesto &&
             !showVerMovimientos &&
             !showIngresos && <Home />}
 

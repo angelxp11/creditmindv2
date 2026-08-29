@@ -179,23 +179,21 @@
   flex-direction: column;
   align-items: center;
   gap: 10px;
-}
-
-.home-chart__value {
-  color: var(--text-title);
-  font-size: 0.95rem;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow-wrap: anywhere;
-  text-align: center;
+  width: 100%;
+  max-width: 120px;
+  margin: 0 auto;
 }
 
 .home-chart__track {
+  order: 1;
+  position: relative;
   width: 100%;
+  max-width: 90px;
   height: 150px;
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  overflow: hidden;
   background: linear-gradient(
     to top,
     rgba(255, 255, 255, 0.03),
@@ -204,9 +202,37 @@
   border-radius: 10px;
 }
 
+.home-chart__budget-target {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 90px;
+  border: 2px dashed rgba(245, 158, 11, 0.9);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.home-chart__budget-target--over {
+  border-color: rgba(239, 68, 68, 0.9);
+}
+
+.home-chart__value {
+  order: 2;
+  color: var(--text-title);
+  font-size: 0.95rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
 .home-chart__bar {
-  width: 70%;
-  min-width: 28px;
+  width: clamp(26px, 68%, 54px);
+  min-width: 26px;
+  max-width: 54px;
   border-radius: 8px 8px 3px 3px;
   height: 0px;
   transition: height 0.9s cubic-bezier(0.22, 1, 0.36, 1);
@@ -220,12 +246,115 @@
   background: linear-gradient(180deg, #f59e0b, color-mix(in srgb, #f59e0b 55%, transparent));
 }
 
+.home-bar--category-1 {
+  background: linear-gradient(180deg, #a78bfa, color-mix(in srgb, #a78bfa 55%, transparent));
+}
+
+.home-bar--category-2 {
+  background: linear-gradient(180deg, #34d399, color-mix(in srgb, #34d399 55%, transparent));
+}
+
+.home-bar--category-3 {
+  background: linear-gradient(180deg, #fbbf24, color-mix(in srgb, #fbbf24 55%, transparent));
+}
+
+.home-bar--category-4 {
+  background: linear-gradient(180deg, #60a5fa, color-mix(in srgb, #60a5fa 55%, transparent));
+}
+
+.home-bar--category-5 {
+  background: linear-gradient(180deg, #fb7185, color-mix(in srgb, #fb7185 55%, transparent));
+}
+
 .home-bar--available {
   background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 55%, transparent));
 }
 
 .home-bar--negative {
   background: linear-gradient(180deg, #ef4444, color-mix(in srgb, #ef4444 55%, transparent));
+}
+
+.home-budget-summary {
+  margin-top: 18px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 16px;
+}
+
+.home-budget-summary__header {
+  margin-bottom: 10px;
+  color: var(--text-label);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.home-budget-summary__list {
+  display: grid;
+  gap: 10px;
+}
+
+.home-budget-summary__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.home-budget-summary__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.home-budget-summary__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.home-budget-summary__meta strong,
+.home-budget-summary__meta span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-budget-summary__meta strong {
+  color: var(--text-title);
+  font-size: 0.9rem;
+}
+
+.home-budget-summary__meta span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.home-budget-summary__remaining {
+  color: var(--success);
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.home-budget-summary__remaining--negative {
+  color: var(--danger, #ef4444);
+}
+
+.home-budget-summary__dot.home-bar--category-1,
+.home-budget-summary__dot.home-bar--category-2,
+.home-budget-summary__dot.home-bar--category-3,
+.home-budget-summary__dot.home-bar--category-4,
+.home-budget-summary__dot.home-bar--category-5 {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
 }
 
 /* --- Saldos bajo el gráfico --- */

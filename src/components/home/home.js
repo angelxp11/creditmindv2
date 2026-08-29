@@ -6,11 +6,90 @@ import "./home.css";
 
 const BAR_MAX_HEIGHT = 140; // px
 
+const normalizeTagValue = (value) => String(value ?? "").trim().toUpperCase();
+
+const normalizeTagList = (list = []) => {
+  const source = Array.isArray(list) ? list : [];
+  return source
+    .map((tag) => normalizeTagValue(tag).replace(/,$/, ""))
+    .filter(Boolean);
+};
+
+const movementMatchesBudget = (budget, movement) => {
+  if (!budget || !movement) {
+    return false;
+  }
+
+  const budgetTags = normalizeTagList(budget.tags);
+  const movementTags = normalizeTagList(movement.tags);
+  const budgetNames = [
+    budget.categoriaGlobal,
+    budget.categoriaNombre,
+    budget.establecimiento,
+    ...(Array.isArray(budget.tags) ? budget.tags : []),
+  ].map((value) => normalizeTagValue(value));
+  const movementNames = [
+    movement.categoriaGlobal,
+    movement.categoriaNombre,
+    movement.establecimiento,
+    ...(Array.isArray(movement.tags) ? movement.tags : []),
+  ].map((value) => normalizeTagValue(value));
+
+  return (
+    budgetNames.some((name) => name && movementNames.includes(name)) ||
+    budgetTags.some((tag) => movementTags.includes(tag)) ||
+    movementTags.some((tag) => budgetTags.includes(tag)) ||
+    normalizeTagValue(budget.categoriaGlobal || budget.categoriaNombre) ===
+      normalizeTagValue(movement.categoriaGlobal || movement.categoriaNombre)
+  );
+};
+
+const matchingMovementsForBudget = (budget, accountId, movements = [], categoryCatalog = []) => {
+  if (!budget || !Array.isArray(movements)) {
+    return 0;
+  }
+
+  const startValue = budget.fechaCreacion?.toDate
+    ? budget.fechaCreacion.toDate()
+    : budget.fechaCreacion || budget.fechaProgramada || budget.fechaFin;
+  const start = startValue instanceof Date
+    ? startValue
+    : new Date(`${String(startValue).slice(0, 10)}T00:00:00`);
+  const end = budget.fechaFin
+    ? new Date(`${budget.fechaFin}T23:59:59`)
+    : start;
+
+  const relatedCategory = categoryCatalog.find((category) => {
+    const categoryName = normalizeTagValue(category.categoriaGlobal || category.nombre);
+    const budgetName = normalizeTagValue(budget.categoriaGlobal || budget.categoriaNombre || budget.establecimiento);
+    const sameCategoryId = budget.categoriaId && category.id === budget.categoriaId;
+    return sameCategoryId || categoryName === budgetName;
+  });
+  const extraTags = normalizeTagList([
+    ...(Array.isArray(budget.tags) ? budget.tags : []),
+    ...(Array.isArray(relatedCategory?.tags) ? relatedCategory.tags : []),
+  ]);
+
+  return movements
+    .filter((movement) => movement.cuentaId === accountId && movement.fechaHora)
+    .filter((movement) => {
+      const movementDate = new Date(
+        movement.fechaHora?.seconds ? movement.fechaHora.toDate() : movement.fechaHora
+      );
+      const movementMatches = movementMatchesBudget(budget, movement, extraTags);
+
+      return movementMatches && movementDate >= start && movementDate <= end;
+    })
+    .reduce((total, movement) => total + Math.abs(Number(movement.valor || 0)), 0);
+};
+
 const Home = () => {
   const user = auth.currentUser;
   const [defaultAccount, setDefaultAccount] = useState(null);
   const [savingsAccounts, setSavingsAccounts] = useState([]);
   const [budgetedBalance, setBudgetedBalance] = useState(0);
+  const [budgetSpent, setBudgetSpent] = useState(0);
+  const [activeBudgetRows, setActiveBudgetRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [animate, setAnimate] = useState(false);
 
@@ -50,16 +129,80 @@ const Home = () => {
               where("usuarioId", "==", user.uid)
             )
           );
-          const reserved = budgetsSnapshot.docs
-            .map((budgetDoc) => budgetDoc.data())
+          const pendingBudgets = budgetsSnapshot.docs
+            .map((budgetDoc) => ({ id: budgetDoc.id, ...budgetDoc.data() }))
             .filter(
               (budget) =>
-                budget.estado === "pendiente" && budget.cuentaId === account.id
+                budget.estado === "pendiente" &&
+                budget.cuentaId === account.id &&
+                (budget.fechaFin || budget.fechaCreacion)
+            );
+
+          const today = new Date();
+          const activeBudgets = pendingBudgets.filter((budget) => {
+            const startValue = budget.fechaCreacion?.toDate
+              ? budget.fechaCreacion.toDate()
+              : budget.fechaCreacion || budget.fechaProgramada || budget.fechaFin;
+            const start = startValue instanceof Date
+              ? startValue
+              : new Date(`${String(startValue).slice(0, 10)}T00:00:00`);
+            const end = budget.fechaFin
+              ? new Date(`${budget.fechaFin}T23:59:59`)
+              : start;
+            return today >= start && today <= end;
+          });
+
+          const displayBudgets = pendingBudgets.length > 0 ? pendingBudgets : activeBudgets;
+
+          const targetBudge = displayBudgets.reduce(
+            (total, budget) => total + Number(budget.valor || 0),
+            0
+          );
+
+          const categoriesSnapshot = await getDocs(
+            query(
+              collection(db, "categorias"),
+              where("usuarioId", "==", user.uid)
             )
-            .reduce((total, budget) => total + Number(budget.valor || 0), 0);
-          setBudgetedBalance(reserved);
+          );
+          const categoryList = categoriesSnapshot.docs.map((categoryDoc) => ({
+            id: categoryDoc.id,
+            ...categoryDoc.data(),
+          }));
+
+          const movementsSnapshot = await getDocs(
+            query(
+              collection(db, "movimientos"),
+              where("userId", "==", user.uid)
+            )
+          );
+          const matchingMovements = movementsSnapshot.docs
+            .map((movementDoc) => movementDoc.data())
+            .filter((movement) => movement.cuentaId === account.id);
+
+          const spentByBudget = displayBudgets.reduce(
+            (total, budget) => total + matchingMovementsForBudget(budget, account.id, matchingMovements, categoryList),
+            0
+          );
+
+          const activeBudgetRowsData = displayBudgets.map((budget) => {
+            const spent = matchingMovementsForBudget(budget, account.id, matchingMovements, categoryList);
+
+            return {
+              id: budget.id,
+              name: budget.categoriaGlobal || budget.categoriaNombre || budget.establecimiento || "Presupuesto",
+              target: Number(budget.valor || 0),
+              spent,
+              remaining: Number(budget.valor || 0) - spent,
+            };
+          });
+
+          setBudgetedBalance(targetBudge);
+          setBudgetSpent(spentByBudget);
+          setActiveBudgetRows(activeBudgetRowsData);
         } else {
           setBudgetedBalance(0);
+          setBudgetSpent(0);
         }
       } catch (error) {
         console.error("Error cargando la cuenta predeterminada:", error);
@@ -80,16 +223,52 @@ const Home = () => {
   }, [loading]);
 
   const currentBalance = Number(defaultAccount?.saldo || 0);
+  const budgetTarget = Number(budgetedBalance || 0);
+  const budgetProgress = Number(budgetSpent || 0);
   const availableBalance = currentBalance - budgetedBalance;
   const formatMoney = (value) => Number(value || 0).toLocaleString("es-CO");
 
-  const maxValue = Math.max(currentBalance, budgetedBalance, Math.abs(availableBalance), 1);
+  const categoryPalette = [
+    "home-bar--category-1",
+    "home-bar--category-2",
+    "home-bar--category-3",
+    "home-bar--category-4",
+    "home-bar--category-5",
+  ];
+
+  const maxValue = Math.max(
+    currentBalance,
+    budgetTarget,
+    budgetProgress,
+    ...activeBudgetRows.flatMap((row) => [row.target, row.spent]),
+    Math.abs(availableBalance),
+    1
+  );
+
   const getBarHeight = (value) => {
     const pct = Math.max(Math.abs(value), 0) / maxValue;
-    // Altura mínima visible del 6% para que la barra nunca "desaparezca" en 0
     const clamped = Math.max(pct, value === 0 ? 0.04 : pct);
     return Math.round(clamped * BAR_MAX_HEIGHT);
   };
+
+  const budgetBars = activeBudgetRows.length
+    ? activeBudgetRows.map((row, index) => ({
+        key: row.id,
+        label: row.name,
+        value: row.spent,
+        modifier: row.spent > row.target ? "home-bar--negative" : categoryPalette[index % categoryPalette.length],
+        target: row.target,
+        colorClass: categoryPalette[index % categoryPalette.length],
+      }))
+    : [
+        {
+          key: "reserved",
+          label: "Gasto del presupuesto",
+          value: budgetProgress,
+          modifier: budgetProgress > budgetTarget ? "home-bar--negative" : "home-bar--reserved",
+          target: budgetTarget,
+        },
+      ];
 
   const bars = [
     {
@@ -97,13 +276,9 @@ const Home = () => {
       label: "Saldo actual",
       value: currentBalance,
       modifier: "home-bar--current",
+      target: null,
     },
-    {
-      key: "reserved",
-      label: "Saldo presupuestado",
-      value: budgetedBalance,
-      modifier: "home-bar--reserved",
-    },
+    ...budgetBars,
   ];
 
   return (
@@ -132,6 +307,18 @@ const Home = () => {
                   ${formatMoney(bar.value)}
                 </span>
                 <div className="home-chart__track">
+                  {bar.target !== null && bar.target > 0 && (
+                    <div
+                      className={
+                        bar.value > bar.target
+                          ? "home-chart__budget-target home-chart__budget-target--over"
+                          : "home-chart__budget-target"
+                      }
+                      style={{
+                        height: animate ? `${getBarHeight(bar.target)}px` : "0px",
+                      }}
+                    />
+                  )}
                   <div
                     className={`home-chart__bar ${bar.modifier}`}
                     style={{
@@ -142,6 +329,30 @@ const Home = () => {
               </div>
             ))}
           </div>
+
+          {activeBudgetRows.length > 0 && (
+            <div className="home-budget-summary">
+              <div className="home-budget-summary__header">
+                <span>Presupuestos creados</span>
+              </div>
+              <div className="home-budget-summary__list">
+                {activeBudgetRows.map((row, index) => (
+                  <div key={row.id} className="home-budget-summary__item">
+                    <span className={`home-budget-summary__dot ${categoryPalette[index % categoryPalette.length]}`} />
+                    <div className="home-budget-summary__meta">
+                      <strong>{row.name}</strong>
+                      <span>
+                        ${formatMoney(row.spent)} / ${formatMoney(row.target)}
+                      </span>
+                    </div>
+                    <strong className={row.remaining < 0 ? "home-budget-summary__remaining home-budget-summary__remaining--negative" : "home-budget-summary__remaining"}>
+                      ${formatMoney(row.remaining)}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="home-balances">
             {bars.map((bar) => (
