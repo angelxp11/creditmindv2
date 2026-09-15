@@ -92,6 +92,10 @@ const Home = () => {
   const [activeBudgetRows, setActiveBudgetRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [animate, setAnimate] = useState(false);
+  const totalAhorrado = savingsAccounts.reduce(
+    (total, account) => total + (Number(account.saldo) || 0),
+    0
+  );
 
   useEffect(() => {
     const fetchDefaultAccount = async () => {
@@ -379,7 +383,10 @@ const Home = () => {
             <span className="home-savings__eyebrow">Ahorro</span>
             <h2 id="home-savings-title">Mis alcancías</h2>
           </div>
-          <span className="home-savings__count">{savingsAccounts.length}</span>
+          <div className="home-savings__summary">
+            <strong>${formatMoney(totalAhorrado)}</strong>
+            <span>Total ahorrado</span>
+          </div>
         </div>
         {savingsAccounts.length === 0 ? (
           <p className="home-empty">Aún no tienes cuentas de ahorros.</p>

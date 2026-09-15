@@ -7,6 +7,7 @@ import {
   getDocs,
   addDoc,
   updateDoc,
+  writeBatch,
   serverTimestamp,
   doc,
 } from "firebase/firestore";
@@ -30,6 +31,11 @@ const Deudas = ({ isOpen, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState("view"); // "create" | "view"
   const [filterMode, setFilterMode] = useState("proximaPago"); // "proximaPago" | "mayorMenor"
+  const [selectedDeudaIds, setSelectedDeudaIds] = useState([]);
+  const [bulkPaymentModal, setBulkPaymentModal] = useState({
+    isOpen: false,
+    cuentaSeleccionada: "",
+  });
   const [paymentModal, setPaymentModal] = useState({
     isOpen: false,
     deudaId: null,
@@ -44,6 +50,8 @@ const Deudas = ({ isOpen, onClose }) => {
       setFormValues(initialForm);
       setEditingId(null);
       setViewMode("view");
+      setSelectedDeudaIds([]);
+      setBulkPaymentModal({ isOpen: false, cuentaSeleccionada: "" });
       return;
     }
 
@@ -104,6 +112,13 @@ const Deudas = ({ isOpen, onClose }) => {
   };
 
   const isPagada = (deuda) => (deuda.montoRestante ?? deuda.monto) <= 0;
+
+  const pendientes = deudas.filter((deuda) => !isPagada(deuda));
+  const selectedDeudas = deudas.filter((deuda) => selectedDeudaIds.includes(deuda.id) && !isPagada(deuda));
+  const totalSeleccionado = selectedDeudas.reduce(
+    (total, deuda) => total + Number(deuda.montoRestante ?? deuda.monto ?? 0),
+    0
+  );
 
   const getFilteredDeudas = () => {
     const pendientes = deudas.filter((d) => !isPagada(d));
@@ -237,6 +252,32 @@ const Deudas = ({ isOpen, onClose }) => {
   const closePaymentModal = () =>
     setPaymentModal({ isOpen: false, deudaId: null, montoDisponible: 0, montoAPagar: "", cuentaSeleccionada: "", tipoPago: "parcial" });
 
+  const toggleDeudaSelection = (deudaId) => {
+    setSelectedDeudaIds((prev) =>
+      prev.includes(deudaId) ? prev.filter((id) => id !== deudaId) : [...prev, deudaId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedDeudaIds((prev) =>
+      prev.length === pendientes.length ? [] : pendientes.map((deuda) => deuda.id)
+    );
+  };
+
+  const closeBulkPaymentModal = () =>
+    setBulkPaymentModal({ isOpen: false, cuentaSeleccionada: "" });
+
+  const openBulkPaymentModal = () => {
+    if (selectedDeudas.length === 0) {
+      showToast("Selecciona al menos una deuda pendiente", "info");
+      return;
+    }
+    setBulkPaymentModal({
+      isOpen: true,
+      cuentaSeleccionada: cuentas[0]?.id || "",
+    });
+  };
+
   const handlePaymentChange = (e) => {
     const cleanValue = e.target.value.replace(/\./g, "");
     setPaymentModal((prev) => ({ ...prev, montoAPagar: cleanValue ? formatNumber(cleanValue) : "" }));
@@ -338,6 +379,77 @@ const Deudas = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleBulkPayment = async () => {
+    const user = auth.currentUser;
+    const cuentaActual = cuentas.find((cuenta) => cuenta.id === bulkPaymentModal.cuentaSeleccionada);
+
+    if (!user) { showToast("No hay usuario autenticado", "error"); return; }
+    if (selectedDeudas.length === 0) { showToast("Selecciona al menos una deuda pendiente", "error"); return; }
+    if (!cuentaActual) { showToast("Selecciona una cuenta para el pago", "error"); return; }
+
+    const saldoCuenta = Number(cuentaActual.saldo) || 0;
+    if (totalSeleccionado > saldoCuenta) {
+      showToast("Saldo insuficiente en la cuenta seleccionada", "error"); return;
+    }
+
+    setLoading(true);
+    try {
+      const batch = writeBatch(db);
+      const cuentaRef = doc(db, "cuentas", cuentaActual.id);
+      const movimientoRefs = [];
+
+      selectedDeudas.forEach((deuda) => {
+        batch.update(doc(db, "deudas", deuda.id), {
+          montoRestante: 0,
+          pagada: true,
+          ultimaActualizacion: serverTimestamp(),
+        });
+
+        const movimientoRef = doc(collection(db, "movimientos"));
+        movimientoRefs.push({ ref: movimientoRef, deuda });
+      });
+
+      batch.update(cuentaRef, {
+        saldo: saldoCuenta - totalSeleccionado,
+        ultimaActualizacion: serverTimestamp(),
+      });
+
+      movimientoRefs.forEach(({ ref, deuda }) => {
+        batch.set(ref, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: cuentaActual.id,
+          cuentaBanco: cuentaActual.banco,
+          cuentaNombre: cuentaActual.nombre,
+          valor: Number(deuda.montoRestante ?? deuda.monto ?? 0),
+          establecimiento: `Pago deuda: ${deuda.nombre}`,
+          tipo: "pago_deuda",
+          fechaCreacion: serverTimestamp(),
+          fechaHora: new Date(),
+        });
+      });
+
+      await batch.commit();
+
+      setDeudas((prev) => prev.map((deuda) =>
+        selectedDeudaIds.includes(deuda.id)
+          ? { ...deuda, montoRestante: 0, pagada: true }
+          : deuda
+      ));
+      setCuentas((prev) => prev.map((cuenta) =>
+        cuenta.id === cuentaActual.id ? { ...cuenta, saldo: saldoCuenta - totalSeleccionado } : cuenta
+      ));
+      setSelectedDeudaIds([]);
+      closeBulkPaymentModal();
+      showToast("Deudas pagadas correctamente", "success");
+    } catch (error) {
+      console.error("Error procesando pago masivo:", error);
+      showToast("No se pudieron procesar las deudas seleccionadas", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -390,11 +502,12 @@ const Deudas = ({ isOpen, onClose }) => {
             </div>
 
             <div className="form-group checkbox-group">
-              <label htmlFor="tieneInteres">
+              <div className="checkbox-wrapper-42">
                 <input id="tieneInteres" name="tieneInteres" type="checkbox"
                   checked={formValues.tieneInteres} onChange={handleChange} />
-                ¿Tiene interés?
-              </label>
+                <label className="cbx" htmlFor="tieneInteres" />
+                <label className="lbl" htmlFor="tieneInteres">¿Tiene interés?</label>
+              </div>
             </div>
 
             <div className="form-group">
@@ -438,6 +551,14 @@ const Deudas = ({ isOpen, onClose }) => {
                 >
                   Mayor a menor
                 </button>
+                <button
+                  type="button"
+                  onClick={openBulkPaymentModal}
+                  className="deudas-filter-btn deudas-filter-btn--bulk"
+                  disabled={selectedDeudas.length === 0}
+                >
+                  Pagar seleccionadas ({selectedDeudas.length})
+                </button>
               </div>
             </div>
             {deudas.length === 0 ? (
@@ -446,6 +567,18 @@ const Deudas = ({ isOpen, onClose }) => {
               <table>
                 <thead>
                   <tr>
+                    <th className="deudas-select-column">
+                      <div className="checkbox-wrapper-42">
+                        <input
+                          id="seleccionar-todas-deudas"
+                          type="checkbox"
+                          checked={pendientes.length > 0 && selectedDeudaIds.length === pendientes.length}
+                          onChange={toggleSelectAll}
+                          aria-label="Seleccionar todas las deudas pendientes"
+                        />
+                        <label className="cbx" htmlFor="seleccionar-todas-deudas" />
+                      </div>
+                    </th>
                     <th>Nombre</th>
                     <th>Monto total</th>
                     <th>Restante</th>
@@ -461,6 +594,19 @@ const Deudas = ({ isOpen, onClose }) => {
                     const pagada = isPagada(deuda);
                     return (
                       <tr key={deuda.id} className={pagada ? "deuda-row--pagada" : ""}>
+                        <td className="deudas-select-column">
+                          <div className="checkbox-wrapper-42">
+                            <input
+                              id={`seleccionar-deuda-${deuda.id}`}
+                              type="checkbox"
+                              checked={selectedDeudaIds.includes(deuda.id)}
+                              onChange={() => toggleDeudaSelection(deuda.id)}
+                              disabled={pagada}
+                              aria-label={`Seleccionar deuda ${deuda.nombre}`}
+                            />
+                            <label className="cbx" htmlFor={`seleccionar-deuda-${deuda.id}`} />
+                          </div>
+                        </td>
                         <td className={pagada ? "deuda-nombre--pagada" : ""}>{deuda.nombre}</td>
                         <td>${formatNumber(deuda.monto.toString())}</td>
                         <td>
@@ -581,6 +727,38 @@ const Deudas = ({ isOpen, onClose }) => {
           </div>
         );
       })()}
+
+      {bulkPaymentModal.isOpen && (
+        <div className="deudas-modal-overlay" onClick={closeBulkPaymentModal}>
+          <div className="deudas-modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3>Pagar deudas seleccionadas</h3>
+            <p>
+              Se pagarán <strong>{selectedDeudas.length} deudas</strong> por un total de
+              <strong>${formatNumber(String(totalSeleccionado))}</strong>.
+            </p>
+            <select
+              value={bulkPaymentModal.cuentaSeleccionada}
+              onChange={(e) => setBulkPaymentModal((prev) => ({ ...prev, cuentaSeleccionada: e.target.value }))}
+              className="deudas-modal-select"
+            >
+              <option value="">Selecciona una cuenta</option>
+              {cuentas.map((cuenta) => (
+                <option key={cuenta.id} value={cuenta.id}>
+                  {cuenta.nombre} - {cuenta.banco} (${formatNumber(String(cuenta.saldo))})
+                </option>
+              ))}
+            </select>
+            <div className="deudas-modal-buttons">
+              <button className="deudas-modal-btn deudas-modal-btn--primary" onClick={handleBulkPayment}>
+                Confirmar pagos
+              </button>
+              <button className="deudas-modal-btn deudas-modal-btn--secondary" onClick={closeBulkPaymentModal}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

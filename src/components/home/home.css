@@ -107,6 +107,25 @@
   font-weight: 700;
 }
 
+.home-savings__summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.home-savings__summary strong {
+  color: var(--success);
+  font-size: 1.1rem;
+}
+
+.home-savings__summary span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
 .home-savings__list {
   display: grid;
   gap: 9px;
