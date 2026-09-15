@@ -7,6 +7,7 @@ import {
   getDocs,
   addDoc,
   updateDoc,
+  deleteDoc,
   writeBatch,
   serverTimestamp,
   doc,
@@ -44,6 +45,12 @@ const Deudas = ({ isOpen, onClose }) => {
     cuentaSeleccionada: "",
     tipoPago: "parcial", // "parcial" | "total"
   });
+  const [remainingModal, setRemainingModal] = useState({
+    isOpen: false,
+    deudaId: null,
+    montoRestante: "",
+  });
+  const [editMenuOpenId, setEditMenuOpenId] = useState(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -223,6 +230,10 @@ const Deudas = ({ isOpen, onClose }) => {
   };
 
   /* ── Editar ── */
+  const toggleEditMenu = (deudaId) => {
+    setEditMenuOpenId((prev) => (prev === deudaId ? null : deudaId));
+  };
+
   const handleEdit = (deuda) => {
     setEditingId(deuda.id);
     setFormValues({
@@ -233,6 +244,7 @@ const Deudas = ({ isOpen, onClose }) => {
       proximaFechaPago: getDateString(deuda.proximaFechaPago),
     });
     setViewMode("create");
+    setEditMenuOpenId(null);
   };
 
   /* ── Modal de pago ── */
@@ -281,6 +293,88 @@ const Deudas = ({ isOpen, onClose }) => {
   const handlePaymentChange = (e) => {
     const cleanValue = e.target.value.replace(/\./g, "");
     setPaymentModal((prev) => ({ ...prev, montoAPagar: cleanValue ? formatNumber(cleanValue) : "" }));
+  };
+
+  const openRemainingModal = (deuda) => {
+    setRemainingModal({
+      isOpen: true,
+      deudaId: deuda.id,
+      montoRestante: String(deuda.montoRestante ?? deuda.monto ?? 0),
+    });
+  };
+
+  const closeRemainingModal = () => setRemainingModal({ isOpen: false, deudaId: null, montoRestante: "" });
+
+  const handleRemainingChange = (e) => {
+    const cleanValue = e.target.value.replace(/\./g, "");
+    setRemainingModal((prev) => ({
+      ...prev,
+      montoRestante: cleanValue ? formatNumber(cleanValue) : "",
+    }));
+  };
+
+  const handleDeleteDeuda = async (deudaId) => {
+    const deudaActual = deudas.find((deuda) => deuda.id === deudaId);
+    if (!deudaActual) return;
+
+    const confirmar = window.confirm(`¿Seguro que deseas eliminar la deuda "${deudaActual.nombre}"?`);
+    if (!confirmar) return;
+
+    setLoading(true);
+    try {
+      await deleteDoc(doc(db, "deudas", deudaId));
+      setDeudas((prev) => prev.filter((deuda) => deuda.id !== deudaId));
+      setSelectedDeudaIds((prev) => prev.filter((id) => id !== deudaId));
+      showToast("Deuda eliminada correctamente", "success");
+    } catch (error) {
+      console.error("Error eliminando deuda:", error);
+      showToast("No se pudo eliminar la deuda", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveRemaining = async () => {
+    const deudaActual = deudas.find((deuda) => deuda.id === remainingModal.deudaId);
+    if (!deudaActual) return;
+
+    const nuevoRestante = Number(remainingModal.montoRestante.replace(/\./g, ""));
+
+    if (Number.isNaN(nuevoRestante) || nuevoRestante < 0) {
+      showToast("Ingresa un valor válido para el restante", "error");
+      return;
+    }
+
+    if (nuevoRestante > deudaActual.monto) {
+      showToast("El restante no puede ser mayor que el monto total", "error");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const deudaPagada = nuevoRestante <= 0;
+      await updateDoc(doc(db, "deudas", deudaActual.id), {
+        montoRestante: nuevoRestante,
+        pagada: deudaPagada,
+        ultimaActualizacion: serverTimestamp(),
+      });
+
+      setDeudas((prev) =>
+        prev.map((deuda) =>
+          deuda.id === deudaActual.id
+            ? { ...deuda, montoRestante: nuevoRestante, pagada: deudaPagada }
+            : deuda
+        )
+      );
+
+      showToast("Monto restante actualizado correctamente", "success");
+      closeRemainingModal();
+    } catch (error) {
+      console.error("Error actualizando restante:", error);
+      showToast("No se pudo actualizar el monto restante", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   /* ── Procesar pago ── */
@@ -635,9 +729,24 @@ const Deudas = ({ isOpen, onClose }) => {
                                 Pagar
                               </button>
                             )}
-                            <button className="deudas-edit" type="button" onClick={() => handleEdit(deuda)}>
-                              Editar
-                            </button>
+                            <div className="deudas-edit-menu">
+                              <button className="deudas-edit" type="button" onClick={() => toggleEditMenu(deuda.id)}>
+                                Editar
+                              </button>
+                              {editMenuOpenId === deuda.id && (
+                                <div className="deudas-edit-menu__body">
+                                  <button className="deudas-edit-subaction" type="button" onClick={() => handleEdit(deuda)}>
+                                    Editar datos
+                                  </button>
+                                  <button className="deudas-remaining" type="button" onClick={() => { setEditMenuOpenId(null); openRemainingModal(deuda); }}>
+                                    Restante
+                                  </button>
+                                  <button className="deudas-delete" type="button" onClick={() => { setEditMenuOpenId(null); handleDeleteDeuda(deuda.id); }}>
+                                    Eliminar
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -759,6 +868,48 @@ const Deudas = ({ isOpen, onClose }) => {
           </div>
         </div>
       )}
+
+      {remainingModal.isOpen && (() => {
+        const deudaActual = deudas.find((deuda) => deuda.id === remainingModal.deudaId);
+        const montoTotal = deudaActual?.monto ?? 0;
+        const montoRestanteActual = deudaActual?.montoRestante ?? montoTotal;
+
+        return (
+          <div className="deudas-modal-overlay" onClick={closeRemainingModal}>
+            <div className="deudas-modal-content" onClick={(e) => e.stopPropagation()}>
+              <h3>Editar monto restante</h3>
+              <p>
+                Deuda: <strong>{deudaActual?.nombre}</strong><br />
+                Total: <strong>${formatNumber(String(montoTotal))}</strong>
+              </p>
+
+              <input
+                type="text"
+                inputMode="numeric"
+                value={remainingModal.montoRestante}
+                onChange={handleRemainingChange}
+                onKeyDown={handleMontoKeyDown}
+                onPaste={handleMontoPaste}
+                placeholder={`Máximo $${formatNumber(String(montoTotal))}`}
+                className="deudas-modal-input"
+              />
+
+              <div className="deudas-total-preview">
+                Restante actual: <strong>${formatNumber(String(montoRestanteActual))}</strong>
+              </div>
+
+              <div className="deudas-modal-buttons">
+                <button className="deudas-modal-btn deudas-modal-btn--primary" onClick={handleSaveRemaining}>
+                  Guardar cambio
+                </button>
+                <button className="deudas-modal-btn deudas-modal-btn--secondary" onClick={closeRemainingModal}>
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

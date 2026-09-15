@@ -401,10 +401,35 @@
 .deudas-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  position: relative;
+}
+
+.deudas-edit-menu {
+  position: relative;
+}
+
+.deudas-edit-menu__body {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+  min-width: 140px;
+  z-index: 10;
 }
 
 .deudas-pay,
-.deudas-edit {
+.deudas-edit,
+.deudas-edit-subaction,
+.deudas-remaining,
+.deudas-delete {
   border: none;
   border-radius: 8px;
   padding: 8px 14px;
@@ -430,18 +455,48 @@
   transform: translateY(0);
 }
 
-.deudas-edit {
+.deudas-edit,
+.deudas-edit-subaction {
   background: var(--info);
   color: white;
 }
 
-.deudas-edit:hover {
+.deudas-edit:hover,
+.deudas-edit-subaction:hover {
   opacity: 0.9;
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
 }
 
-.deudas-edit:active {
+.deudas-edit:active,
+.deudas-edit-subaction:active {
+  transform: translateY(0);
+}
+
+.deudas-remaining {
+  background: #f59e0b;
+  color: white;
+}
+
+.deudas-remaining:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+}
+
+.deudas-delete {
+  background: var(--danger);
+  color: white;
+}
+
+.deudas-delete:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);
+}
+
+.deudas-delete:active,
+.deudas-remaining:active {
   transform: translateY(0);
 }
 
@@ -879,7 +934,10 @@
   }
 
   .deudas-pay,
-  .deudas-edit {
+  .deudas-edit,
+  .deudas-edit-subaction,
+  .deudas-remaining,
+  .deudas-delete {
     padding: 7px 12px;
     font-size: 0.8rem;
     flex: 1;
@@ -1048,7 +1106,10 @@
   }
 
   .deudas-pay,
-  .deudas-edit {
+  .deudas-edit,
+  .deudas-edit-subaction,
+  .deudas-remaining,
+  .deudas-delete {
     width: 100%;
     padding: 8px 12px;
     font-size: 0.8rem;

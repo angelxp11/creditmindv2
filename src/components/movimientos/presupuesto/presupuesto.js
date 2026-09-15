@@ -32,6 +32,39 @@ const formatMoney = (value) => {
   return number < 0 ? `-${abs}` : abs;
 };
 
+const formatDateLabel = (value) => {
+  if (!value) return "Sin fecha";
+
+  try {
+    const dateObject = value?.toDate ? value.toDate() : new Date(value);
+    if (Number.isNaN(dateObject.getTime())) {
+      return "Sin fecha";
+    }
+
+    return dateObject.toLocaleDateString("es-ES", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  } catch (error) {
+    return "Sin fecha";
+  }
+};
+
+const formatDateRangeLabel = (startDate, endDate) => {
+  const start = formatDateLabel(startDate);
+  const end = formatDateLabel(endDate);
+
+  if (start === "Sin fecha" && end === "Sin fecha") {
+    return "Sin rango";
+  }
+
+  if (start === "Sin fecha") return end;
+  if (end === "Sin fecha") return start;
+
+  return `${start} a ${end}`;
+};
+
 const movementMatchesBudget = (budget, movement, extraTags = []) => {
   if (!budget || !movement) {
     return false;
@@ -74,8 +107,12 @@ const Presupuesto = ({ isOpen, onClose }) => {
   const [budgetForm, setBudgetForm] = useState({
     categoriaId: "",
     valor: "",
+    fechaInicio: "",
     fechaFin: "",
+    nota: "",
   });
+  const [editingBudgetId, setEditingBudgetId] = useState(null);
+  const [budgetNoteText, setBudgetNoteText] = useState("");
   const [selectedCategoryTags, setSelectedCategoryTags] = useState([]);
   const [editingCategoryId, setEditingCategoryId] = useState("");
 
@@ -154,10 +191,9 @@ const Presupuesto = ({ isOpen, onClose }) => {
 
         const budgetList = budgetsSnapshot.docs
           .map((item) => ({ id: item.id, ...item.data() }))
-          .filter((budget) => budget.estado === "pendiente")
           .sort((a, b) => {
-            const aDate = a.fechaProgramada || "";
-            const bDate = b.fechaProgramada || "";
+            const aDate = a.fechaFin || a.fechaProgramada || "";
+            const bDate = b.fechaFin || b.fechaProgramada || "";
             return String(bDate).localeCompare(String(aDate));
           });
 
@@ -312,18 +348,14 @@ const Presupuesto = ({ isOpen, onClose }) => {
     setSelectedCategoryTags(normalizeTags(category.tags || []));
   };
 
-  const getAvailableBudgetBalance = (accountId) => {
-    const account = accounts.find((item) => item.id === accountId);
-    const reserved = budgets
-      .filter((budget) => budget.cuentaId === accountId)
-      .reduce((total, budget) => total + Number(budget.valor || 0), 0);
-    return Number(account?.saldo || 0) - reserved;
-  };
-
   const formatBudgetValue = (value) => {
     const digits = String(value ?? "").replace(/[^\d]/g, "");
     return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   };
+
+  const hasBalanceGap = selectedAccount && budgetForm.valor
+    ? Number(selectedAccount.saldo || 0) < Number(String(budgetForm.valor).replace(/\./g, ""))
+    : false;
 
   const handleBudgetFormChange = (event) => {
     const { name, value } = event.target;
@@ -336,11 +368,16 @@ const Presupuesto = ({ isOpen, onClose }) => {
   };
 
   const resetBudgetForm = () => {
+    const today = new Date().toISOString().slice(0, 10);
     setBudgetForm({
       categoriaId: "",
       valor: "",
-      fechaFin: "",
+      fechaInicio: today,
+      fechaFin: today,
+      nota: "",
     });
+    setEditingBudgetId(null);
+    setBudgetNoteText("");
   };
 
   const getBudgetSpent = (budget) => {
@@ -427,13 +464,26 @@ const Presupuesto = ({ isOpen, onClose }) => {
       await updateDoc(doc(db, "presupuestos", budget.id), {
         fechaCreacion: serverTimestamp(),
         fechaFin: nextDate,
+        fechaInicio: new Date().toISOString().slice(0, 10),
         estado: "pendiente",
+        gastoReal: 0,
+        montoRestante: Number(budget.valor || 0),
+        fechaCierre: null,
       });
 
       setBudgets((prev) =>
         prev.map((item) =>
           item.id === budget.id
-            ? { ...item, fechaCreacion: new Date(), fechaFin: nextDate, estado: "pendiente" }
+            ? {
+                ...item,
+                fechaCreacion: new Date(),
+                fechaInicio: new Date().toISOString().slice(0, 10),
+                fechaFin: nextDate,
+                estado: "pendiente",
+                gastoReal: 0,
+                montoRestante: Number(item.valor || 0),
+                fechaCierre: null,
+              }
             : item
         )
       );
@@ -441,6 +491,42 @@ const Presupuesto = ({ isOpen, onClose }) => {
     } catch (error) {
       console.error("Error renovando presupuesto:", error);
       showToast("No se pudo renovar el presupuesto", "error");
+    }
+  };
+
+  const handleCloseBudget = async (budget) => {
+    const gastoReal = getBudgetSpent(budget);
+    const montoRestante = Number(budget.valor || 0) - gastoReal;
+
+    if (!window.confirm("¿Deseas liquidar este presupuesto y guardar el monto real gastado?")) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, "presupuestos", budget.id), {
+        estado: "cerrado",
+        gastoReal,
+        montoRestante,
+        fechaCierre: serverTimestamp(),
+        ultimaActualizacion: serverTimestamp(),
+      });
+
+      setBudgets((prev) =>
+        prev.map((item) =>
+          item.id === budget.id
+            ? {
+                ...item,
+                estado: "cerrado",
+                gastoReal,
+                montoRestante,
+              }
+            : item
+        )
+      );
+      showToast("Presupuesto liquidado correctamente", "success");
+    } catch (error) {
+      console.error("Error cerrando presupuesto:", error);
+      showToast("No se pudo liquidar el presupuesto", "error");
     }
   };
 
@@ -456,6 +542,35 @@ const Presupuesto = ({ isOpen, onClose }) => {
     } catch (error) {
       console.error("Error eliminando presupuesto:", error);
       showToast("No se pudo eliminar el presupuesto", "error");
+    }
+  };
+
+  const handleEditBudgetNote = (budget) => {
+    setEditingBudgetId(budget.id);
+    setBudgetNoteText(budget.nota || "");
+  };
+
+  const handleSaveBudgetNote = async () => {
+    if (!editingBudgetId) return;
+
+    try {
+      await updateDoc(doc(db, "presupuestos", editingBudgetId), {
+        nota: budgetNoteText.trim(),
+        ultimaActualizacion: serverTimestamp(),
+      });
+
+      setBudgets((prev) =>
+        prev.map((budget) =>
+          budget.id === editingBudgetId ? { ...budget, nota: budgetNoteText.trim() } : budget
+        )
+      );
+
+      showToast("Nota del presupuesto actualizada", "success");
+      setEditingBudgetId(null);
+      setBudgetNoteText("");
+    } catch (error) {
+      console.error("Error actualizando la nota del presupuesto:", error);
+      showToast("No se pudo actualizar la nota", "error");
     }
   };
 
@@ -480,19 +595,19 @@ const Presupuesto = ({ isOpen, onClose }) => {
       return;
     }
 
-    if (!valor || !budgetForm.fechaFin) {
-      showToast("Completa el valor y la fecha final del presupuesto", "error");
+    if (!valor || !budgetForm.fechaInicio || !budgetForm.fechaFin) {
+      showToast("Completa el valor, la fecha de inicio y la fecha final del presupuesto", "error");
+      return;
+    }
+
+    if (new Date(budgetForm.fechaFin) < new Date(budgetForm.fechaInicio)) {
+      showToast("La fecha final no puede ser menor que la fecha de inicio", "error");
       return;
     }
 
     const cuentaSeleccionada = accounts.find((item) => item.id === selectedCuentaId);
     if (!cuentaSeleccionada) {
       showToast("La cuenta seleccionada no existe", "error");
-      return;
-    }
-
-    if (valor > getAvailableBudgetBalance(selectedCuentaId)) {
-      showToast("El presupuesto supera el saldo disponible después de las reservas", "error");
       return;
     }
 
@@ -508,7 +623,9 @@ const Presupuesto = ({ isOpen, onClose }) => {
         valor,
         establecimiento: categoriaGlobalNombre || categoriaSeleccionada?.nombre || "",
         tags: normalizeTags(categoriaSeleccionada?.tags || []),
+        fechaInicio: budgetForm.fechaInicio,
         fechaFin: budgetForm.fechaFin,
+        nota: budgetForm.nota.trim(),
         estado: "pendiente",
         fechaCreacion: serverTimestamp(),
       };
@@ -679,8 +796,22 @@ const Presupuesto = ({ isOpen, onClose }) => {
           <section className="presupuesto-card">
             <div className="presupuesto-card__heading">
               <h3>Crear presupuesto</h3>
-              <span>{""}</span>
+              <span>{"🗓️"}</span>
             </div>
+
+            {selectedAccount && budgetForm.valor && (
+              <div className={hasBalanceGap ? "presupuesto-alert presupuesto-alert--danger" : "presupuesto-alert presupuesto-alert--info"}>
+                <strong>Plan futuro:</strong>
+                <span>
+                  {hasBalanceGap
+                    ? `Este presupuesto supera el saldo actual en $${formatMoney(Number(String(budgetForm.valor).replace(/\./g, "")) - Number(selectedAccount.saldo || 0))}.`
+                    : `Este presupuesto está dentro del saldo actual disponible: $${formatMoney(selectedAccount.saldo || 0)}.`}
+                </span>
+                <small>
+                  La idea es proyectar el gasto para la fecha elegida, no asumiendo que el dinero ya está disponible hoy.
+                </small>
+              </div>
+            )}
 
             <div className="presupuesto-budget-form">
               <label className="presupuesto-field">
@@ -722,14 +853,37 @@ const Presupuesto = ({ isOpen, onClose }) => {
               </label>
 
               <label className="presupuesto-field">
+                <span>Fecha de inicio</span>
+                <input
+                  className="presupuesto-input"
+                  name="fechaInicio"
+                  type="date"
+                  min={new Date().toISOString().slice(0, 10)}
+                  value={budgetForm.fechaInicio}
+                  onChange={handleBudgetFormChange}
+                />
+              </label>
+
+              <label className="presupuesto-field">
                 <span>Fecha final</span>
                 <input
                   className="presupuesto-input"
                   name="fechaFin"
                   type="date"
-                  min={new Date().toISOString().slice(0, 10)}
+                  min={budgetForm.fechaInicio || new Date().toISOString().slice(0, 10)}
                   value={budgetForm.fechaFin}
                   onChange={handleBudgetFormChange}
+                />
+              </label>
+
+              <label className="presupuesto-field">
+                <span>Nota del presupuesto</span>
+                <textarea
+                  className="presupuesto-input presupuesto-input--textarea"
+                  name="nota"
+                  value={budgetForm.nota}
+                  onChange={handleBudgetFormChange}
+                  placeholder="Ej. Comprar laptop, sofá, regalo de cumpleaños..."
                 />
               </label>
 
@@ -758,9 +912,9 @@ const Presupuesto = ({ isOpen, onClose }) => {
                   return (
                     <article key={budget.id} className="presupuesto-budget">
                       <div className="presupuesto-budget__main">
-                        <strong>{budget.establecimiento}</strong>
+                        <strong>{budget.establecimiento || budget.categoriaGlobal || "Presupuesto"}</strong>
                         <span>
-                          ${formatMoney(budget.valor)} · {budget.cuentaNombre || "Cuenta"} · {budget.fechaFin || budget.fechaProgramada}
+                          ${formatMoney(budget.valor)} · {String(budget.cuentaNombre || "Cuenta").toUpperCase()} · {formatDateRangeLabel(budget.fechaInicio, budget.fechaFin)}
                         </span>
                       </div>
 
@@ -772,18 +926,62 @@ const Presupuesto = ({ isOpen, onClose }) => {
                         ))}
                       </div>
 
+                      <div className="presupuesto-budget__note">
+                        <strong>Nota:</strong>
+                        <span>{budget.nota || "Sin nota registrada"}</span>
+                      </div>
+
                       <div className="presupuesto-budget__remaining">
-                        Gastado: ${formatMoney(getBudgetSpent(budget))} · Restante: ${formatMoney(getBudgetRemaining(budget))}
+                        {budget.estado === "cerrado" ? (
+                          <>
+                            Estado: <strong className="presupuesto-status presupuesto-status--closed">Cerrado</strong> ·
+                            Gastado: ${formatMoney(Number(budget.gastoReal ?? getBudgetSpent(budget)))} ·
+                            Restante: ${formatMoney(Number(budget.montoRestante ?? getBudgetRemaining(budget)))}
+                          </>
+                        ) : (
+                          <>
+                            Gastado: ${formatMoney(getBudgetSpent(budget))} · Restante: ${formatMoney(getBudgetRemaining(budget))}
+                          </>
+                        )}
                       </div>
 
                       <div className="presupuesto-budget__actions">
-                        <button type="button" className="presupuesto-action presupuesto-action--renew" onClick={() => handleRenewBudget(budget)}>
-                          Renovar
+                        {budget.estado !== "cerrado" && (
+                          <button type="button" className="presupuesto-action presupuesto-action--renew" onClick={() => handleRenewBudget(budget)}>
+                            Renovar
+                          </button>
+                        )}
+                        {budget.estado !== "cerrado" && (
+                          <button type="button" className="presupuesto-action presupuesto-action--success" onClick={() => handleCloseBudget(budget)}>
+                            Liquidar
+                          </button>
+                        )}
+                        <button type="button" className="presupuesto-action presupuesto-action--edit" onClick={() => handleEditBudgetNote(budget)}>
+                          Editar nota
                         </button>
                         <button type="button" className="presupuesto-action presupuesto-action--delete" onClick={() => handleDeleteBudget(budget)}>
                           Eliminar
                         </button>
                       </div>
+
+                      {editingBudgetId === budget.id && (
+                        <div className="presupuesto-note-editor">
+                          <textarea
+                            className="presupuesto-input presupuesto-input--textarea"
+                            value={budgetNoteText}
+                            onChange={(event) => setBudgetNoteText(event.target.value)}
+                            placeholder="Escribe lo que quieres comprar o ahorrar para este periodo"
+                          />
+                          <div className="presupuesto-note-editor__actions">
+                            <button type="button" className="presupuesto-submit" onClick={handleSaveBudgetNote}>
+                              Guardar nota
+                            </button>
+                            <button type="button" className="presupuesto-cancel" onClick={() => { setEditingBudgetId(null); setBudgetNoteText(""); }}>
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="presupuesto-budget__movements">
                         <span className="presupuesto-budget__movements-title">Movimientos en este presupuesto</span>

@@ -152,6 +152,38 @@
   gap: 12px;
 }
 
+.presupuesto-alert {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.presupuesto-alert--info {
+  background: rgba(14, 165, 233, 0.08);
+  border-color: rgba(14, 165, 233, 0.25);
+  color: var(--text-title);
+}
+
+.presupuesto-alert--danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #ef4444;
+}
+
+.presupuesto-alert strong,
+.presupuesto-alert span,
+.presupuesto-alert small {
+  display: block;
+}
+
+.presupuesto-alert small {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
 .presupuesto-budget-form {
   display: grid;
   gap: 14px;
@@ -288,10 +320,71 @@
   color: #22c55e;
 }
 
+.presupuesto-action--edit {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #3b82f6;
+}
+
+.presupuesto-action--success {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.25);
+  color: #10b981;
+}
+
 .presupuesto-action--delete {
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.3);
   color: #ef4444;
+}
+
+.presupuesto-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.presupuesto-status--closed {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.presupuesto-budget__note {
+  display: grid;
+  gap: 6px;
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.presupuesto-budget__note strong {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-label);
+}
+
+.presupuesto-budget__note span {
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.presupuesto-note-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.presupuesto-note-editor__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .presupuesto-budget__movements {
