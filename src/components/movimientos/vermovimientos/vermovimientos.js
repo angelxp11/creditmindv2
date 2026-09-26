@@ -8,6 +8,7 @@ import {
   deleteDoc,
   doc,
   updateDoc,
+  runTransaction,
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
@@ -48,7 +49,7 @@ const formatMoney = (value) => {
  * distingue como ingresos; si tienen `establecimiento` son egresos normales.
  */
 const isIngreso = (m) =>
-  m.descripcion && !m.establecimiento && m.tipo !== "pago_deuda";
+  m.descripcion && !m.establecimiento && m.tipo !== "pago_deuda" && m.tipo !== "transferencia";
 
 const isPagoDeuda = (m) => m.tipo === "pago_deuda";
 
@@ -103,7 +104,6 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         );
         const docs = snap.docs
           .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((account) => (account.tipoCuenta || "gastos") === "gastos")
           .sort(
             (a, b) =>
               (b.fechaCreacion?.toMillis?.() ?? 0) -
@@ -328,17 +328,75 @@ const VerMovimientos = ({ isOpen, onClose }) => {
 
   /* ── Eliminar movimiento ── */
   const handleDeleteMovimiento = async (movimiento) => {
+    const isTransfer = movimiento.tipo === "transferencia";
+    const isExternalTransfer = isTransfer && movimiento.tipoTransferencia === "externa";
     const confirmDelete = window.confirm(
-      `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
+      isExternalTransfer
+        ? `¿Eliminar el envío a ${movimiento.destinatarioNombre}? Se devolverán $${formatMoney(movimiento.valor)} al origen.`
+        : isTransfer
+        ? `¿Eliminar esta transferencia? Se devolverán $${formatMoney(movimiento.valor)} al origen y se descontarán del destino.`
+        : `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
     );
     if (!confirmDelete) return;
 
     setLoading(true);
     try {
       // 1. Obtener la cuenta actual del estado local
-      const cuentaActual = accounts.find((c) => c.id === selectedCuentaId);
+      const cuentaActual = accounts.find((c) => c.id === (movimiento.cuentaId || selectedCuentaId));
       if (!cuentaActual) {
         showToast("No se encontró la cuenta", "error");
+        return;
+      }
+
+      if (isTransfer) {
+        const sourceRef = doc(db, "cuentas", movimiento.cuentaId);
+        const destinationRef = movimiento.cuentaDestinoId
+          ? doc(db, "cuentas", movimiento.cuentaDestinoId)
+          : null;
+        let sourceBalanceAfter = 0;
+        let destinationBalanceAfter = 0;
+
+        await runTransaction(db, async (transaction) => {
+          const sourceSnapshot = await transaction.get(sourceRef);
+          const destinationSnapshot = destinationRef
+            ? await transaction.get(destinationRef)
+            : null;
+          if (!sourceSnapshot.exists() || (destinationSnapshot && !destinationSnapshot.exists())) {
+            throw new Error("CUENTA_NO_ENCONTRADA");
+          }
+
+          const sourceBalance = Number(sourceSnapshot.data().saldo || 0);
+          const value = Number(movimiento.valor);
+          sourceBalanceAfter = sourceBalance + value;
+          transaction.update(sourceRef, {
+            saldo: sourceBalanceAfter,
+            ultimaActualizacion: new Date(),
+          });
+          if (destinationRef && destinationSnapshot) {
+            const destinationBalance = Number(destinationSnapshot.data().saldo || 0);
+            if (destinationBalance < value) throw new Error("SALDO_DESTINO_INSUFICIENTE");
+            destinationBalanceAfter = destinationBalance - value;
+            transaction.update(destinationRef, {
+              saldo: destinationBalanceAfter,
+              ultimaActualizacion: new Date(),
+            });
+          }
+          transaction.delete(doc(db, "movimientos", movimiento.id));
+        });
+
+        setAccounts((previous) => previous.map((account) => {
+          if (account.id === movimiento.cuentaId) return { ...account, saldo: sourceBalanceAfter };
+          if (destinationRef && account.id === movimiento.cuentaDestinoId) {
+            return { ...account, saldo: destinationBalanceAfter };
+          }
+          return account;
+        }));
+        if (movimiento._source === "userId") {
+          setMovementsById((previous) => previous.filter((item) => item.id !== movimiento.id));
+        } else {
+          setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
+        }
+        showToast("Transferencia revertida correctamente", "success");
         return;
       }
 
@@ -373,7 +431,12 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       showToast("Movimiento eliminado correctamente", "success");
     } catch (error) {
       console.error("Error al eliminar movimiento:", error);
-      showToast("No se pudo eliminar el movimiento", "error");
+      showToast(
+        error.message === "SALDO_DESTINO_INSUFICIENTE"
+          ? "No se puede revertir: el destino ya no tiene ese saldo disponible"
+          : "No se pudo eliminar el movimiento",
+        "error"
+      );
     } finally {
       setLoading(false);
     }
@@ -600,7 +663,13 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                           </span>
                         )}
                       </td>
-                      <td>{m.establecimiento || m.descripcion || "−"}</td>
+                      <td>
+                        {m.establecimiento || (m.tipo === "transferencia"
+                          ? m.tipoTransferencia === "externa"
+                            ? `${m.descripcion || "TRANSFERENCIA"} · Para: ${m.destinatarioNombre}`
+                            : `${m.descripcion || "TRANSFERENCIA"} · ${m.cuentaDestinoBanco || ""} ${m.cuentaDestinoNombre || ""}`.trim()
+                          : m.descripcion) || "−"}
+                      </td>
                       <td>
                         {isPagoDeuda(m) ? (
                           <span className="ver-tag-badge ver-tag-badge--deuda">
@@ -612,7 +681,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                           </span>
                         ) : (
                           <span className="ver-tag-badge ver-tag-badge--egreso">
-                            Egreso
+                            {m.tipo === "transferencia" ? "Transferencia" : "Egreso"}
                           </span>
                         )}
                       </td>

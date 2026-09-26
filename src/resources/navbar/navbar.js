@@ -37,7 +37,7 @@ const MobileBtn = ({ icon, label, onClick, className = "" }) => (
 );
 
 /* ── Componente principal ──────────────────────── */
-const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOpenPresupuesto, onOpenVerMovimientos, onOpenIngresos, onGoHome }) => {
+const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOpenPresupuesto, onOpenVerMovimientos, onOpenIngresos, onOpenTransferencia, onGoHome }) => {
   const [open, setOpen]           = useState(false);
   const [showNavbar, setShowNavbar] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
@@ -105,6 +105,7 @@ const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOp
           <NavBtn icon={<IconBudget />} label="Presupuesto"     onClick={() => { close(); onOpenPresupuesto && onOpenPresupuesto(); }} />
           <NavBtn icon={<IconPay />}    label="Pagar"           onClick={() => { close(); onOpenMovimientos(); }} />
           <NavBtn icon={<IconPay />}    label="Ingresos"        onClick={() => { close(); onOpenIngresos && onOpenIngresos(); }} />
+          <NavBtn icon={<IconPay />}    label="Transferir"     onClick={() => { close(); onOpenTransferencia && onOpenTransferencia(); }} />
           <NavBtn icon={<IconList />}   label="Movimientos"     onClick={() => { close(); onOpenVerMovimientos(); }} />
           {isAdmin && (
             <NavBtn icon={<IconAdmin />} label="Solicitudes" onClick={handleAdmin} className="nav-btn--admin" />
@@ -150,6 +151,7 @@ const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOp
           <MobileBtn icon={<IconBudget />} label="Presupuesto"      onClick={() => { close(); onOpenPresupuesto && onOpenPresupuesto(); }} />
           <MobileBtn icon={<IconPay />}    label="Pagar"            onClick={() => { close(); onOpenMovimientos(); }} />
           <MobileBtn icon={<IconPay />}    label="Ingresos"         onClick={() => { close(); onOpenIngresos && onOpenIngresos(); }} />
+          <MobileBtn icon={<IconPay />}    label="Transferir"       onClick={() => { close(); onOpenTransferencia && onOpenTransferencia(); }} />
           <MobileBtn icon={<IconList />}   label="Ver movimientos"  onClick={() => { close(); onOpenVerMovimientos(); }} />
           {isAdmin && (
             <MobileBtn icon={<IconAdmin />} label="Solicitudes (Admin)" onClick={handleAdmin} className="nav-mobile-btn--admin" />

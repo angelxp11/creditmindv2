@@ -12,6 +12,7 @@ import Movimientos from "./components/movimientos/movimientos";
 import Presupuesto from "./components/movimientos/presupuesto/presupuesto";
 import VerMovimientos from "./components/movimientos/vermovimientos/vermovimientos";
 import Ingresos from "./components/movimientos/ingresos/ingresos";
+import Transferencia from "./components/movimientos/ingresos/tranferencia/transferencia";
 
 import Loading from "./resources/loading/loading";
 import ToastContainer from "./resources/toastcontainer/ToastContainer";
@@ -29,6 +30,7 @@ function App() {
   const [showPresupuesto, setShowPresupuesto] = useState(false);
   const [showVerMovimientos, setShowVerMovimientos] = useState(false);
   const [showIngresos, setShowIngresos] = useState(false);
+  const [showTransferencia, setShowTransferencia] = useState(false);
 
   const [modalData, setModalData] = useState({
     title: "",
@@ -79,6 +81,7 @@ function App() {
               setShowMovimientos(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
             }}
             onOpenDeudas={() => {
               setShowDeudas(true);
@@ -86,6 +89,7 @@ function App() {
               setShowMovimientos(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
             }}
             onOpenMovimientos={() => {
               setShowMovimientos(true);
@@ -94,6 +98,7 @@ function App() {
               setShowDeudas(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
             }}
             onOpenPresupuesto={() => {
               setShowPresupuesto(true);
@@ -102,6 +107,7 @@ function App() {
               setShowDeudas(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
             }}
             onOpenIngresos={() => {
               setShowIngresos(true);
@@ -110,6 +116,7 @@ function App() {
               setShowDeudas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);
+              setShowTransferencia(false);
             }}
             onOpenVerMovimientos={() => {
               setShowVerMovimientos(true);
@@ -118,6 +125,16 @@ function App() {
               setShowDeudas(false);
               setShowMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
+            }}
+            onOpenTransferencia={() => {
+              setShowTransferencia(true);
+              setShowIngresos(false);
+              setShowPresupuesto(false);
+              setShowCuentas(false);
+              setShowDeudas(false);
+              setShowMovimientos(false);
+              setShowVerMovimientos(false);
             }}
             onGoHome={() => {
               setShowCuentas(false);
@@ -126,6 +143,7 @@ function App() {
               setShowPresupuesto(false);
               setShowVerMovimientos(false);
               setShowIngresos(false);
+              setShowTransferencia(false);
             }}
           />
 
@@ -154,6 +172,11 @@ function App() {
             onClose={() => setShowIngresos(false)}
           />
 
+          <Transferencia
+            isOpen={showTransferencia}
+            onClose={() => setShowTransferencia(false)}
+          />
+
           <VerMovimientos
             isOpen={showVerMovimientos}
             onClose={() => setShowVerMovimientos(false)}
@@ -164,7 +187,8 @@ function App() {
             !showMovimientos &&
             !showPresupuesto &&
             !showVerMovimientos &&
-            !showIngresos && <Home />}
+            !showIngresos &&
+            !showTransferencia && <Home />}
 
           <PQR />
 

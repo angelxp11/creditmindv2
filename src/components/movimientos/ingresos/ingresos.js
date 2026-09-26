@@ -6,7 +6,7 @@ import {
   serverTimestamp,
   query,
   where,
-  getDocs,
+  onSnapshot,
   doc,
   updateDoc,
 } from "firebase/firestore";
@@ -26,34 +26,31 @@ const Ingresos = ({ isOpen, onClose }) => {
   const [selectedCuentaId, setSelectedCuentaId] = useState("");
 
   React.useEffect(() => {
-    const fetchAccounts = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
+    if (!isOpen) return undefined;
 
-      setLoading(true);
-      try {
-        const accountsQuery = query(
-          collection(db, "cuentas"),
-          where("usuarioId", "==", user.uid)
-        );
-        const snapshot = await getDocs(accountsQuery);
+    const user = auth.currentUser;
+    if (!user) return undefined;
+
+    setFormValues(initialForm);
+    setSelectedCuentaId("");
+    setLoading(true);
+    const accountsQuery = query(
+      collection(db, "cuentas"),
+      where("usuarioId", "==", user.uid)
+    );
+    const unsubscribe = onSnapshot(accountsQuery, (snapshot) => {
         const accountDocs = snapshot.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
+          .map((accountDoc) => ({ id: accountDoc.id, ...accountDoc.data() }))
           .sort((a, b) => (b.fechaCreacion?.toMillis?.() ?? 0) - (a.fechaCreacion?.toMillis?.() ?? 0));
         setAccounts(accountDocs);
-      } catch (error) {
+        setLoading(false);
+      }, (error) => {
         console.error("Error cargando cuentas:", error);
         showToast("No se pudieron cargar las cuentas", "error");
-      } finally {
         setLoading(false);
-      }
-    };
+      });
 
-    if (isOpen) {
-      setFormValues(initialForm);
-      setSelectedCuentaId("");
-      fetchAccounts();
-    }
+      return unsubscribe;
   }, [isOpen]);
 
   
