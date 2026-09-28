@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
+import { applyCreditPayment, applyCreditPurchase } from "../../cuentas/creditAccountUtils";
 import Filtro from "./filtro";
 import "./vermovimientos.css";
 
@@ -328,11 +329,15 @@ const VerMovimientos = ({ isOpen, onClose }) => {
 
   /* ── Eliminar movimiento ── */
   const handleDeleteMovimiento = async (movimiento) => {
-    const isTransfer = movimiento.tipo === "transferencia";
+    const isCardPayment = movimiento.tipo === "pago_tarjeta";
+    const isCreditPurchase = movimiento.tipo === "credito_compra";
+    const isTransfer = movimiento.tipo === "transferencia" || isCardPayment;
     const isExternalTransfer = isTransfer && movimiento.tipoTransferencia === "externa";
     const confirmDelete = window.confirm(
       isExternalTransfer
         ? `¿Eliminar el envío a ${movimiento.destinatarioNombre}? Se devolverán $${formatMoney(movimiento.valor)} al origen.`
+        : isCardPayment
+        ? `¿Eliminar este abono? Se devolverán $${formatMoney(movimiento.valor)} al origen y la deuda de la tarjeta aumentará.`
         : isTransfer
         ? `¿Eliminar esta transferencia? Se devolverán $${formatMoney(movimiento.valor)} al origen y se descontarán del destino.`
         : `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
@@ -348,6 +353,38 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         return;
       }
 
+      if (isCreditPurchase) {
+        const accountRef = doc(db, "cuentas", movimiento.cuentaId);
+        let availableAfter = 0;
+        let debtAfter = 0;
+        await runTransaction(db, async (transaction) => {
+          const accountSnapshot = await transaction.get(accountRef);
+          if (!accountSnapshot.exists()) throw new Error("CUENTA_NO_ENCONTRADA");
+          const accountData = accountSnapshot.data();
+          const value = Number(movimiento.valor);
+          const creditChanges = applyCreditPayment(accountData, value);
+          availableAfter = creditChanges.saldo;
+          debtAfter = creditChanges.deudaActual;
+          transaction.update(accountRef, {
+            saldo: availableAfter,
+            deudaActual: debtAfter,
+            ultimaActualizacion: new Date(),
+          });
+          transaction.delete(doc(db, "movimientos", movimiento.id));
+        });
+
+        setAccounts((previous) => previous.map((account) => account.id === movimiento.cuentaId
+          ? { ...account, saldo: availableAfter, deudaActual: debtAfter }
+          : account));
+        if (movimiento._source === "userId") {
+          setMovementsById((previous) => previous.filter((item) => item.id !== movimiento.id));
+        } else {
+          setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
+        }
+        showToast("Compra con tarjeta revertida", "success");
+        return;
+      }
+
       if (isTransfer) {
         const sourceRef = doc(db, "cuentas", movimiento.cuentaId);
         const destinationRef = movimiento.cuentaDestinoId
@@ -355,6 +392,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
           : null;
         let sourceBalanceAfter = 0;
         let destinationBalanceAfter = 0;
+        let destinationDebtAfter = null;
 
         await runTransaction(db, async (transaction) => {
           const sourceSnapshot = await transaction.get(sourceRef);
@@ -373,13 +411,25 @@ const VerMovimientos = ({ isOpen, onClose }) => {
             ultimaActualizacion: new Date(),
           });
           if (destinationRef && destinationSnapshot) {
-            const destinationBalance = Number(destinationSnapshot.data().saldo || 0);
-            if (destinationBalance < value) throw new Error("SALDO_DESTINO_INSUFICIENTE");
-            destinationBalanceAfter = destinationBalance - value;
-            transaction.update(destinationRef, {
-              saldo: destinationBalanceAfter,
-              ultimaActualizacion: new Date(),
-            });
+            const destinationData = destinationSnapshot.data();
+            const destinationBalance = Number(destinationData.saldo || 0);
+            if (destinationData.tipoCuenta === "credito") {
+              const creditChanges = applyCreditPurchase(destinationData, value);
+              destinationBalanceAfter = creditChanges.saldo;
+              destinationDebtAfter = creditChanges.deudaActual;
+              transaction.update(destinationRef, {
+                saldo: destinationBalanceAfter,
+                deudaActual: destinationDebtAfter,
+                ultimaActualizacion: new Date(),
+              });
+            } else {
+              if (destinationBalance < value) throw new Error("SALDO_DESTINO_INSUFICIENTE");
+              destinationBalanceAfter = destinationBalance - value;
+              transaction.update(destinationRef, {
+                saldo: destinationBalanceAfter,
+                ultimaActualizacion: new Date(),
+              });
+            }
           }
           transaction.delete(doc(db, "movimientos", movimiento.id));
         });
@@ -387,7 +437,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         setAccounts((previous) => previous.map((account) => {
           if (account.id === movimiento.cuentaId) return { ...account, saldo: sourceBalanceAfter };
           if (destinationRef && account.id === movimiento.cuentaDestinoId) {
-            return { ...account, saldo: destinationBalanceAfter };
+            return { ...account, saldo: destinationBalanceAfter, ...(destinationDebtAfter !== null ? { deudaActual: destinationDebtAfter } : {}) };
           }
           return account;
         }));
@@ -396,14 +446,14 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         } else {
           setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
         }
-        showToast("Transferencia revertida correctamente", "success");
+        showToast(isCardPayment ? "Abono revertido; la deuda de la tarjeta fue restaurada" : "Transferencia revertida correctamente", "success");
         return;
       }
 
-      const nuevoSaldo = cuentaActual.saldo + movimiento.valor;
+      const nuevoSaldo = Number(cuentaActual.saldo || 0) + Number(movimiento.valor || 0);
 
       // 2. Actualizar el saldo de la cuenta en Firestore
-      const cuentaRef = doc(db, "cuentas", selectedCuentaId);
+      const cuentaRef = doc(db, "cuentas", movimiento.cuentaId || selectedCuentaId);
 
       // 2. Actualizar el saldo de la cuenta
       await updateDoc(cuentaRef, {
@@ -417,7 +467,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       // 4. Actualizar estado local
       setAccounts((prev) =>
         prev.map((c) =>
-          c.id === selectedCuentaId ? { ...c, saldo: nuevoSaldo } : c
+          c.id === (movimiento.cuentaId || selectedCuentaId) ? { ...c, saldo: nuevoSaldo } : c
         )
       );
 

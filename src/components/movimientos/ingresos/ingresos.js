@@ -93,6 +93,10 @@ const Ingresos = ({ isOpen, onClose }) => {
 
     const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
     if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
+    if (cuentaSeleccionada.tipoCuenta === "credito") {
+      showToast("No puedes registrar ingresos en una tarjeta de crédito", "error");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -148,7 +152,7 @@ const Ingresos = ({ isOpen, onClose }) => {
               onChange={(e) => setSelectedCuentaId(e.target.value)}
             >
               <option value="">Selecciona una cuenta</option>
-              {accounts.map((c) => (
+              {accounts.filter((account) => account.tipoCuenta !== "credito").map((c) => (
                 <option key={c.id} value={c.id}>
   {c.banco} – {c.nombre} (${Number(c.saldo || 0).toLocaleString("es-CO")})
 </option>

@@ -13,6 +13,7 @@ import Presupuesto from "./components/movimientos/presupuesto/presupuesto";
 import VerMovimientos from "./components/movimientos/vermovimientos/vermovimientos";
 import Ingresos from "./components/movimientos/ingresos/ingresos";
 import Transferencia from "./components/movimientos/ingresos/tranferencia/transferencia";
+import Obligaciones from "./components/movimientos/obligaciones/obligaciones";
 
 import Loading from "./resources/loading/loading";
 import ToastContainer from "./resources/toastcontainer/ToastContainer";
@@ -31,6 +32,7 @@ function App() {
   const [showVerMovimientos, setShowVerMovimientos] = useState(false);
   const [showIngresos, setShowIngresos] = useState(false);
   const [showTransferencia, setShowTransferencia] = useState(false);
+  const [showObligaciones, setShowObligaciones] = useState(false);
 
   const [modalData, setModalData] = useState({
     title: "",
@@ -77,6 +79,7 @@ function App() {
             }}
             onOpenCuentas={() => {
               setShowCuentas(true);
+              setShowObligaciones(false);
               setShowDeudas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);
@@ -85,6 +88,7 @@ function App() {
             }}
             onOpenDeudas={() => {
               setShowDeudas(true);
+              setShowObligaciones(false);
               setShowCuentas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);
@@ -93,6 +97,7 @@ function App() {
             }}
             onOpenMovimientos={() => {
               setShowMovimientos(true);
+              setShowObligaciones(false);
               setShowPresupuesto(false);
               setShowCuentas(false);
               setShowDeudas(false);
@@ -102,6 +107,7 @@ function App() {
             }}
             onOpenPresupuesto={() => {
               setShowPresupuesto(true);
+              setShowObligaciones(false);
               setShowMovimientos(false);
               setShowCuentas(false);
               setShowDeudas(false);
@@ -111,6 +117,7 @@ function App() {
             }}
             onOpenIngresos={() => {
               setShowIngresos(true);
+              setShowObligaciones(false);
               setShowPresupuesto(false);
               setShowCuentas(false);
               setShowDeudas(false);
@@ -120,6 +127,7 @@ function App() {
             }}
             onOpenVerMovimientos={() => {
               setShowVerMovimientos(true);
+              setShowObligaciones(false);
               setShowPresupuesto(false);
               setShowCuentas(false);
               setShowDeudas(false);
@@ -129,6 +137,7 @@ function App() {
             }}
             onOpenTransferencia={() => {
               setShowTransferencia(true);
+              setShowObligaciones(false);
               setShowIngresos(false);
               setShowPresupuesto(false);
               setShowCuentas(false);
@@ -137,6 +146,17 @@ function App() {
               setShowVerMovimientos(false);
             }}
             onGoHome={() => {
+              setShowCuentas(false);
+              setShowDeudas(false);
+              setShowMovimientos(false);
+              setShowPresupuesto(false);
+              setShowVerMovimientos(false);
+              setShowIngresos(false);
+              setShowTransferencia(false);
+              setShowObligaciones(false);
+            }}
+            onOpenObligaciones={() => {
+              setShowObligaciones(true);
               setShowCuentas(false);
               setShowDeudas(false);
               setShowMovimientos(false);
@@ -177,6 +197,11 @@ function App() {
             onClose={() => setShowTransferencia(false)}
           />
 
+          <Obligaciones
+            isOpen={showObligaciones}
+            onClose={() => setShowObligaciones(false)}
+          />
+
           <VerMovimientos
             isOpen={showVerMovimientos}
             onClose={() => setShowVerMovimientos(false)}
@@ -188,7 +213,8 @@ function App() {
             !showPresupuesto &&
             !showVerMovimientos &&
             !showIngresos &&
-            !showTransferencia && <Home />}
+            !showTransferencia &&
+            !showObligaciones && <Home />}
 
           <PQR />
 

@@ -168,6 +168,7 @@ const Presupuesto = ({ isOpen, onClose }) => {
         const accountsSnapshot = await getDocs(accountsQuery);
         const accountList = accountsSnapshot.docs
           .map((item) => ({ id: item.id, ...item.data() }))
+          .filter((account) => (account.tipoCuenta || "gastos") === "gastos")
           .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), "es"));
 
         setAccounts(accountList);

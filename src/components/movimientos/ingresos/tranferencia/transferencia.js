@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import Loading from "../../../../resources/loading/loading";
 import { showToast } from "../../../../resources/toastcontainer/ToastContainer";
+import { applyCreditPayment } from "../../../cuentas/creditAccountUtils";
 import "./transferencia.css";
 
 const initialForm = { valor: "", descripcion: "", persona: "" };
@@ -25,6 +26,9 @@ const Transferencia = ({ isOpen, onClose }) => {
 	const [transferMode, setTransferMode] = useState("cuentas");
 	const [formValues, setFormValues] = useState(initialForm);
 	const [loading, setLoading] = useState(false);
+	const sourceAccounts = accounts.filter((account) => account.tipoCuenta !== "credito");
+	const destinationAccounts = accounts.filter((account) => account.id !== sourceAccountId);
+	const selectedDestination = accounts.find((account) => account.id === destinationAccountId) || null;
 
 	useEffect(() => {
 		if (!isOpen) return undefined;
@@ -84,6 +88,7 @@ const Transferencia = ({ isOpen, onClose }) => {
 
 		if (!user) { showToast("Necesitas iniciar sesión", "error"); return; }
 		if (!source) { showToast("Selecciona una cuenta de origen", "error"); return; }
+		if (source.tipoCuenta === "credito") { showToast("Una tarjeta de crédito no puede ser origen de una transferencia", "error"); return; }
 		if (transferMode === "cuentas" && !destination) { showToast("Selecciona una cuenta de destino", "error"); return; }
 		if (destination && source.id === destination.id) { showToast("El origen y el destino deben ser diferentes", "error"); return; }
 		if (transferMode === "persona" && (!persona || !descripcion)) {
@@ -92,6 +97,11 @@ const Transferencia = ({ isOpen, onClose }) => {
 		}
 		if (!Number.isSafeInteger(valor) || valor <= 0) { showToast("Ingresa un valor válido", "error"); return; }
 		if (valor > Number(source.saldo || 0)) { showToast("Saldo insuficiente en la cuenta de origen", "error"); return; }
+		const isCreditCardPayment = destination?.tipoCuenta === "credito";
+		if (isCreditCardPayment && valor > Number(destination.deudaActual || 0)) {
+			showToast("El abono no puede superar la deuda actual de la tarjeta", "error");
+			return;
+		}
 
 		setLoading(true);
 		try {
@@ -110,6 +120,7 @@ const Transferencia = ({ isOpen, onClose }) => {
 
 				const sourceData = sourceSnapshot.data();
 				const destinationData = destinationSnapshot?.data();
+				if (sourceData.tipoCuenta === "credito") throw new Error("TARJETA_NO_ES_ORIGEN");
 				const sourceBalance = Number(sourceData.saldo || 0);
 				if (valor > sourceBalance) throw new Error("SALDO_INSUFICIENTE");
 
@@ -118,10 +129,18 @@ const Transferencia = ({ isOpen, onClose }) => {
 					ultimaActualizacion: serverTimestamp(),
 				});
 				if (destinationRef && destinationData) {
-					transaction.update(destinationRef, {
-						saldo: Number(destinationData.saldo || 0) + valor,
-						ultimaActualizacion: serverTimestamp(),
-					});
+					if (destinationData.tipoCuenta === "credito") {
+						const creditChanges = applyCreditPayment(destinationData, valor);
+						transaction.update(destinationRef, {
+							...creditChanges,
+							ultimaActualizacion: serverTimestamp(),
+						});
+					} else {
+						transaction.update(destinationRef, {
+							saldo: Number(destinationData.saldo || 0) + valor,
+							ultimaActualizacion: serverTimestamp(),
+						});
+					}
 				}
 				transaction.set(movementRef, {
 					userId: user.uid,
@@ -137,23 +156,25 @@ const Transferencia = ({ isOpen, onClose }) => {
 						tipoTransferencia: "externa",
 						destinatarioNombre: persona.toUpperCase(),
 					}),
-					tipo: "transferencia",
+					tipo: isCreditCardPayment ? "pago_tarjeta" : "transferencia",
 					valor,
-						descripcion: descripcion.toUpperCase() || "TRANSFERENCIA",
+					descripcion: descripcion.toUpperCase() || (isCreditCardPayment ? "ABONO TARJETA DE CREDITO" : "TRANSFERENCIA"),
 					fechaHora: new Date(),
 					fechaCreacion: serverTimestamp(),
 				});
 			});
 
-			showToast("Transferencia registrada correctamente", "success");
+			showToast(isCreditCardPayment ? "Abono aplicado; cupo de la tarjeta liberado" : "Transferencia registrada correctamente", "success");
 			setFormValues(initialForm);
 			setSourceAccountId("");
 			setDestinationAccountId("");
 		} catch (error) {
 			console.error("Error registrando transferencia:", error);
 			showToast(
-				error.message === "SALDO_INSUFICIENTE"
+					error.message === "SALDO_INSUFICIENTE"
 					? "Saldo insuficiente en la cuenta de origen"
+						: error.message === "PAYMENT_EXCEEDS_CREDIT_DEBT"
+						? "El abono no puede superar la deuda actual de la tarjeta"
 					: "No se pudo registrar la transferencia",
 				"error"
 			);
@@ -202,7 +223,7 @@ const Transferencia = ({ isOpen, onClose }) => {
 						<label htmlFor="transfer-source">Desde</label>
 						<select id="transfer-source" value={sourceAccountId} onChange={(event) => setSourceAccountId(event.target.value)}>
 							<option value="">Selecciona cuenta de origen</option>
-							{accounts.map((account) => (
+							{sourceAccounts.map((account) => (
 								<option key={account.id} value={account.id}>
 									{account.banco} - {account.nombre} (${formatMoney(account.saldo)})
 								</option>
@@ -215,9 +236,11 @@ const Transferencia = ({ isOpen, onClose }) => {
 							<label htmlFor="transfer-destination">Hacia</label>
 							<select id="transfer-destination" value={destinationAccountId} onChange={(event) => setDestinationAccountId(event.target.value)}>
 								<option value="">Selecciona cuenta de destino</option>
-								{accounts.filter((account) => account.id !== sourceAccountId).map((account) => (
+								{destinationAccounts.map((account) => (
 									<option key={account.id} value={account.id}>
-										{account.banco} - {account.nombre} (${formatMoney(account.saldo)})
+										{account.banco} - {account.nombre} ({account.tipoCuenta === "credito"
+											? `Disponible $${formatMoney(account.saldo)} · Deuda $${formatMoney(account.deudaActual)}`
+											: `$${formatMoney(account.saldo)}`})
 									</option>
 								))}
 							</select>
@@ -265,13 +288,13 @@ const Transferencia = ({ isOpen, onClose }) => {
 						/>
 					</div>
 
-					<button className="transfer-submit" type="submit" disabled={loading || accounts.length < (transferMode === "cuentas" ? 2 : 1)}>
-						{transferMode === "persona" ? "Enviar transferencia" : "Transferir"}
+					<button className="transfer-submit" type="submit" disabled={loading || sourceAccounts.length < 1 || (transferMode === "cuentas" && destinationAccounts.length < 1)}>
+						{transferMode === "persona" ? "Enviar transferencia" : selectedDestination?.tipoCuenta === "credito" ? "Abonar tarjeta" : "Transferir"}
 					</button>
-					{accounts.length < (transferMode === "cuentas" ? 2 : 1) && !loading && (
+					{(sourceAccounts.length < 1 || (transferMode === "cuentas" && destinationAccounts.length < 1)) && !loading && (
 						<p className="transfer-hint">
 							{transferMode === "cuentas"
-								? "Necesitas al menos dos cuentas para transferir dinero."
+								? "Necesitas una cuenta de origen y otra cuenta o tarjeta de destino."
 								: "Necesitas al menos una cuenta para enviar dinero."}
 						</p>
 					)}

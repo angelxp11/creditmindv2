@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { auth, db } from "../../server/api";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
+import { formatObligationDate, formatObligationSchedule, getLocalDateString, isObligationDue } from "../movimientos/obligaciones/obligationUtils";
+import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
 import "./home.css";
 
 const BAR_MAX_HEIGHT = 140; // px
@@ -87,9 +89,11 @@ const Home = () => {
   const user = auth.currentUser;
   const [defaultAccount, setDefaultAccount] = useState(null);
   const [savingsAccounts, setSavingsAccounts] = useState([]);
+  const [creditAccounts, setCreditAccounts] = useState([]);
   const [budgetedBalance, setBudgetedBalance] = useState(0);
   const [budgetSpent, setBudgetSpent] = useState(0);
   const [activeBudgetRows, setActiveBudgetRows] = useState([]);
+  const [pendingObligations, setPendingObligations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [animate, setAnimate] = useState(false);
   const totalAhorrado = savingsAccounts.reduce(
@@ -123,8 +127,25 @@ const Home = () => {
         const savings = accountDocs.filter(
           (accountDoc) => accountDoc.tipoCuenta === "ahorros"
         );
+        const credit = accountDocs.filter(
+          (accountDoc) => accountDoc.tipoCuenta === "credito"
+        );
         setDefaultAccount(account || null);
         setSavingsAccounts(savings);
+        setCreditAccounts(credit);
+
+        const obligationsSnapshot = await getDocs(
+          query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))
+        );
+        setPendingObligations(
+          obligationsSnapshot.docs
+            .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
+            .filter((obligation) => obligation.activa && isObligationDue(
+              obligation.fechaProximoPago,
+              `${getLocalDateString().slice(0, 7)}-31`
+            ))
+            .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)))
+        );
 
         if (account) {
           const budgetsSnapshot = await getDocs(
@@ -377,6 +398,33 @@ const Home = () => {
         )}
       </section>
 
+      <section className="home-obligations" aria-labelledby="home-obligations-title">
+        <div className="home-obligations__heading">
+          <div>
+            <span className="home-savings__eyebrow">Pagos recurrentes</span>
+            <h2 id="home-obligations-title">Obligaciones por pagar</h2>
+          </div>
+          <span className="home-obligations__count">{pendingObligations.length}</span>
+        </div>
+        {pendingObligations.length === 0 ? (
+          <p className="home-empty">No tienes obligaciones pendientes para este mes.</p>
+        ) : (
+          <div className="home-obligations__list">
+            {pendingObligations.map((obligation) => (
+              <article className="home-obligation" key={obligation.id}>
+                <div className="home-obligation__details">
+                  <strong>{obligation.nombre}</strong>
+                  <span>{formatObligationSchedule(obligation)} · {String(obligation.fechaProximoPago).slice(0, 10) < getLocalDateString() ? "Venció" : "Vence"} {formatObligationDate(obligation.fechaProximoPago)} · {obligation.cuentaNombre}</span>
+                </div>
+                <strong className="home-obligation__amount">
+                  ${Number(obligation.valor || 0).toLocaleString("es-CO")}
+                </strong>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="home-savings" aria-labelledby="home-savings-title">
         <div className="home-savings__heading">
           <div>
@@ -394,7 +442,12 @@ const Home = () => {
           <div className="home-savings__list">
             {savingsAccounts.map((account) => (
               <article className="home-savings__item" key={account.id}>
-                <div className="home-savings__icon" aria-hidden="true">▣</div>
+                <img
+                  className="home-savings__card"
+                  src={getAccountCardImage(account)}
+                  alt={`Tarjeta de ahorros de ${account.nombre}`}
+                  loading="lazy"
+                />
                 <div className="home-savings__details">
                   <strong>{account.nombre}</strong>
                   <span>{account.banco}</span>
@@ -407,6 +460,65 @@ const Home = () => {
           </div>
         )}
       </section>
+
+      {creditAccounts.length > 0 && (
+        <section className="home-credit" aria-labelledby="home-credit-title">
+          <div className="home-credit__heading">
+            <div>
+              <span className="home-savings__eyebrow">Crédito</span>
+              <h2 id="home-credit-title">Mis tarjetas</h2>
+            </div>
+            <div className="home-credit__total">
+              <strong>${formatMoney(creditAccounts.reduce((total, account) => total + Number(account.deudaActual || 0), 0))}</strong>
+              <span>Deuda total</span>
+            </div>
+          </div>
+          <div className="home-credit__list">
+            {creditAccounts.map((account) => {
+              const limit = Number(account.limiteCredito || 0);
+              const debt = Number(account.deudaActual || 0);
+              const utilization = limit > 0 ? Math.min(100, (debt / limit) * 100) : 0;
+              return (
+                <article className="home-credit__item" key={account.id}>
+                  <img
+                    className="home-credit__card"
+                    src={getAccountCardImage(account)}
+                    alt={`Tarjeta de crédito ${account.nombre}`}
+                    loading="lazy"
+                  />
+                  <div className="home-credit__details">
+                    <div>
+                      <strong>{account.nombre}</strong>
+                      <span>{account.banco}</span>
+                    </div>
+                    <div className="home-credit__amounts">
+                      <span>Deuda <strong>${formatMoney(debt)}</strong></span>
+                      <span>Disponible <strong>${formatMoney(account.saldo)}</strong></span>
+                    </div>
+                    <div
+                      className="home-credit__track"
+                      role="progressbar"
+                      aria-label={`Uso del cupo de ${account.nombre}`}
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={Math.round(utilization)}
+                    >
+                      <span style={{ width: `${utilization}%` }} />
+                    </div>
+                    <span className="home-credit__limit">Cupo total · ${formatMoney(limit)}</span>
+                    <div className="home-credit__conditions">
+                      <span>Fecha de corte <strong>{account.fechaCorte ? `Día ${account.fechaCorte}` : "Sin configurar"}</strong></span>
+                      <span>Límite de pago <strong>{account.fechaLimitePago ? `Día ${account.fechaLimitePago}` : "Sin configurar"}</strong></span>
+                      <span>Tasa mensual <strong>{account.tasaInteresMensual !== null && account.tasaInteresMensual !== undefined ? `${Number(account.tasaInteresMensual).toLocaleString("es-CO", { maximumFractionDigits: 2 })}%` : "Sin configurar"}</strong></span>
+                      <span>Tasa E.A. <strong>{account.tasaEfectivaAnual !== null && account.tasaEfectivaAnual !== undefined ? `${Number(account.tasaEfectivaAnual).toLocaleString("es-CO", { maximumFractionDigits: 2 })}%` : "Sin configurar"}</strong></span>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 };

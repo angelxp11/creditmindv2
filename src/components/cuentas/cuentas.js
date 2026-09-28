@@ -12,13 +12,28 @@ import {
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
+import { ACCOUNT_CARD_OPTIONS, getAccountCardImage, getAccountCardKey } from "../../resources/imagenes/tarjetas/accountCard";
 import "./cuentas.css";
 
 const initialForm = {
   banco: "",
   nombre: "",
   saldo: "",
+  limiteCredito: "",
+  deudaActual: "",
+  fechaCorte: "",
+  fechaLimitePago: "",
+  tasaInteresMensual: "",
+  tasaEfectivaAnual: "",
   tipoCuenta: "gastos",
+  imagenTarjeta: "debito",
+};
+
+const sanitizeRateInput = (value) => {
+  const normalized = value.replace(",", ".").replace(/[^\d.]/g, "");
+  const decimalIndex = normalized.indexOf(".");
+  if (decimalIndex === -1) return normalized;
+  return `${normalized.slice(0, decimalIndex)}.${normalized.slice(decimalIndex + 1).replace(/\./g, "").slice(0, 4)}`;
 };
 
 const Cuentas = ({ isOpen, onClose }) => {
@@ -71,7 +86,7 @@ const Cuentas = ({ isOpen, onClose }) => {
   const handleChange = (event) => {
   const { name, value } = event.target;
 
-  if (name === "saldo") {
+  if (["saldo", "limiteCredito", "deudaActual"].includes(name)) {
     const soloNumeros = value.replace(/\D/g, "");
 
     const formateado = soloNumeros.replace(
@@ -81,15 +96,32 @@ const Cuentas = ({ isOpen, onClose }) => {
 
     setFormValues((prev) => ({
       ...prev,
-      saldo: formateado,
+      [name]: formateado,
     }));
 
+    return;
+  }
+
+  if (["fechaCorte", "fechaLimitePago"].includes(name)) {
+    setFormValues((prev) => ({
+      ...prev,
+      [name]: value.replace(/\D/g, "").slice(0, 2),
+    }));
+    return;
+  }
+
+  if (["tasaInteresMensual", "tasaEfectivaAnual"].includes(name)) {
+    setFormValues((prev) => ({
+      ...prev,
+      [name]: sanitizeRateInput(value),
+    }));
     return;
   }
 
   setFormValues((prev) => ({
     ...prev,
     [name]: value,
+    ...(name === "tipoCuenta" ? { imagenTarjeta: getAccountCardKey(value) } : {}),
   }));
 };
 
@@ -102,9 +134,19 @@ const Cuentas = ({ isOpen, onClose }) => {
     const banco = formValues.banco.trim();
     const nombre = formValues.nombre.trim();
     const tipoCuenta = formValues.tipoCuenta;
-    const saldo = Number(
-  (formValues.saldo || "").replace(/\./g, "")
-);
+    const isCreditAccount = tipoCuenta === "credito";
+    const limiteCredito = Number((formValues.limiteCredito || "").replace(/\./g, ""));
+    const deudaActual = Number((formValues.deudaActual || "").replace(/\./g, ""));
+    const fechaCorte = Number(formValues.fechaCorte);
+    const fechaLimitePago = Number(formValues.fechaLimitePago);
+    const tasaInteresMensual = Number(formValues.tasaInteresMensual);
+    const tasaEfectivaAnual = Number(formValues.tasaEfectivaAnual);
+    const imagenTarjeta = ACCOUNT_CARD_OPTIONS.some((option) => option.key === formValues.imagenTarjeta)
+      ? formValues.imagenTarjeta
+      : getAccountCardKey(tipoCuenta);
+    const saldo = isCreditAccount
+      ? limiteCredito - deudaActual
+      : Number((formValues.saldo || "").replace(/\./g, ""));
     const user = auth.currentUser;
 
     if (!user) {
@@ -112,8 +154,21 @@ const Cuentas = ({ isOpen, onClose }) => {
       return;
     }
 
-    if (!banco || !nombre || !["gastos", "ahorros"].includes(tipoCuenta) || Number.isNaN(saldo)) {
+    if (!banco || !nombre || !["gastos", "ahorros", "credito"].includes(tipoCuenta) || Number.isNaN(saldo)) {
       showToast("Completa todos los datos correctamente", "error");
+      return;
+    }
+    if (isCreditAccount && (limiteCredito <= 0 || deudaActual < 0 || deudaActual > limiteCredito)) {
+      showToast("El cupo debe ser mayor a cero y la deuda no puede superar el cupo", "error");
+      return;
+    }
+    if (isCreditAccount && (
+      !Number.isInteger(fechaCorte) || fechaCorte < 1 || fechaCorte > 31 ||
+      !Number.isInteger(fechaLimitePago) || fechaLimitePago < 1 || fechaLimitePago > 31 ||
+      formValues.tasaInteresMensual === "" || !Number.isFinite(tasaInteresMensual) || tasaInteresMensual < 0 ||
+      formValues.tasaEfectivaAnual === "" || !Number.isFinite(tasaEfectivaAnual) || tasaEfectivaAnual < 0
+    )) {
+      showToast("Completa los días de corte y pago y ambas tasas de interés", "error");
       return;
     }
 
@@ -127,13 +182,20 @@ const Cuentas = ({ isOpen, onClose }) => {
           nombre,
           saldo,
           tipoCuenta,
+          limiteCredito: isCreditAccount ? limiteCredito : null,
+          deudaActual: isCreditAccount ? deudaActual : null,
+          fechaCorte: isCreditAccount ? fechaCorte : null,
+          fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
+          tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
+          tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+          imagenTarjeta,
           ultimaActualizacion: serverTimestamp(),
         });
 
         setAccounts((prev) =>
           prev.map((account) =>
             account.id === editingId
-              ? { ...account, banco, nombre, saldo, tipoCuenta }
+              ? { ...account, banco, nombre, saldo, tipoCuenta, limiteCredito: isCreditAccount ? limiteCredito : null, deudaActual: isCreditAccount ? deudaActual : null, fechaCorte: isCreditAccount ? fechaCorte : null, fechaLimitePago: isCreditAccount ? fechaLimitePago : null, tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null, tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null, imagenTarjeta }
               : account
           )
         );
@@ -144,6 +206,13 @@ const Cuentas = ({ isOpen, onClose }) => {
           nombre,
           saldo,
           tipoCuenta,
+          limiteCredito: isCreditAccount ? limiteCredito : null,
+          deudaActual: isCreditAccount ? deudaActual : null,
+          fechaCorte: isCreditAccount ? fechaCorte : null,
+          fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
+          tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
+          tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+          imagenTarjeta,
           usuarioId: user.uid,
           fechaCreacion: serverTimestamp(),
           ultimaActualizacion: serverTimestamp(),
@@ -156,6 +225,13 @@ const Cuentas = ({ isOpen, onClose }) => {
             nombre,
             saldo,
             tipoCuenta,
+            limiteCredito: isCreditAccount ? limiteCredito : null,
+            deudaActual: isCreditAccount ? deudaActual : null,
+            fechaCorte: isCreditAccount ? fechaCorte : null,
+            fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
+            tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
+            tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+            imagenTarjeta,
             usuarioId: user.uid,
           },
           ...prev,
@@ -178,8 +254,15 @@ const Cuentas = ({ isOpen, onClose }) => {
     setFormValues({
   banco: account.banco,
   nombre: account.nombre,
-  saldo: Number(account.saldo || 0).toLocaleString("es-CO"),
+    saldo: account.tipoCuenta === "credito" ? "" : Number(account.saldo || 0).toLocaleString("es-CO"),
+    limiteCredito: account.tipoCuenta === "credito" ? Number(account.limiteCredito || account.saldo || 0).toLocaleString("es-CO") : "",
+    deudaActual: account.tipoCuenta === "credito" ? Number(account.deudaActual || 0).toLocaleString("es-CO") : "",
+    fechaCorte: account.fechaCorte || "",
+    fechaLimitePago: account.fechaLimitePago || "",
+    tasaInteresMensual: account.tasaInteresMensual ?? "",
+    tasaEfectivaAnual: account.tasaEfectivaAnual ?? "",
   tipoCuenta: account.tipoCuenta || "gastos",
+    imagenTarjeta: account.imagenTarjeta || getAccountCardKey(account.tipoCuenta),
 });
   };
 
@@ -268,18 +351,41 @@ const Cuentas = ({ isOpen, onClose }) => {
             />
           </div>
 
-          <div className="form-group">
-            <label htmlFor="saldo">Saldo</label>
-            <input
-  id="saldo"
-  name="saldo"
-  type="text"
-  inputMode="numeric"
-  value={formValues.saldo}
-  onChange={handleChange}
-  placeholder="0"
-/>
-          </div>
+          {formValues.tipoCuenta === "credito" ? (
+            <>
+              <div className="form-group">
+                <label htmlFor="limiteCredito">Cupo total</label>
+                <input id="limiteCredito" name="limiteCredito" type="text" inputMode="numeric" value={formValues.limiteCredito} onChange={handleChange} placeholder="5.000.000" />
+              </div>
+              <div className="form-group">
+                <label htmlFor="deudaActual">Deuda actual</label>
+                <input id="deudaActual" name="deudaActual" type="text" inputMode="numeric" value={formValues.deudaActual} onChange={handleChange} placeholder="0" />
+              </div>
+              <div className="cuentas-credit-terms">
+                <div className="form-group">
+                  <label htmlFor="fechaCorte">Día de corte (del mes)</label>
+                  <input id="fechaCorte" name="fechaCorte" type="text" inputMode="numeric" pattern="[0-9]{1,2}" maxLength="2" required value={formValues.fechaCorte} onChange={handleChange} placeholder="15" />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="fechaLimitePago">Día límite de pago</label>
+                  <input id="fechaLimitePago" name="fechaLimitePago" type="text" inputMode="numeric" pattern="[0-9]{1,2}" maxLength="2" required value={formValues.fechaLimitePago} onChange={handleChange} placeholder="5" />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tasaInteresMensual">Tasa mensual (%)</label>
+                  <input id="tasaInteresMensual" name="tasaInteresMensual" type="text" inputMode="decimal" pattern="([0-9]+([.][0-9]{0,4})?|[.][0-9]{1,4})" required value={formValues.tasaInteresMensual} onChange={handleChange} placeholder="2.00" />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="tasaEfectivaAnual">Tasa efectiva anual (%)</label>
+                  <input id="tasaEfectivaAnual" name="tasaEfectivaAnual" type="text" inputMode="decimal" pattern="([0-9]+([.][0-9]{0,4})?|[.][0-9]{1,4})" required value={formValues.tasaEfectivaAnual} onChange={handleChange} placeholder="26.82" />
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="form-group">
+              <label htmlFor="saldo">Saldo</label>
+              <input id="saldo" name="saldo" type="text" inputMode="numeric" value={formValues.saldo} onChange={handleChange} placeholder="0" />
+            </div>
+          )}
 
           <div className="form-group">
             <label htmlFor="tipoCuenta">Tipo de cuenta</label>
@@ -291,7 +397,33 @@ const Cuentas = ({ isOpen, onClose }) => {
             >
               <option value="gastos">Cuenta de gastos</option>
               <option value="ahorros">Cuenta de ahorros</option>
+              <option value="credito">Tarjeta de crédito</option>
             </select>
+          </div>
+
+          {formValues.tipoCuenta === "credito" && (
+            <p className="cuentas-credit-available">
+              Cupo disponible: ${Math.max(0, Number((formValues.limiteCredito || "").replace(/\./g, "")) - Number((formValues.deudaActual || "").replace(/\./g, ""))).toLocaleString("es-CO")}
+            </p>
+          )}
+
+          <div className="cuentas-card-picker">
+            <span className="cuentas-card-picker__label">Imagen de la tarjeta</span>
+            <div className="cuentas-card-picker__options" role="radiogroup" aria-label="Imagen de la tarjeta">
+              {ACCOUNT_CARD_OPTIONS.map((option) => (
+                <button
+                  className={`cuentas-card-option${formValues.imagenTarjeta === option.key ? " cuentas-card-option--selected" : ""}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={formValues.imagenTarjeta === option.key}
+                  key={option.key}
+                  onClick={() => setFormValues((current) => ({ ...current, imagenTarjeta: option.key }))}
+                >
+                  <img src={option.image} alt="" />
+                  <span>{option.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
           <button className="cuentas-submit" type="submit">
@@ -309,7 +441,9 @@ const Cuentas = ({ isOpen, onClose }) => {
                 <tr>
                   <th>Banco</th>
                   <th>Nombre</th>
-                  <th>Saldo</th>
+                  <th>Saldo disponible</th>
+                  <th>Deuda / cupo</th>
+                  <th>Tarjeta</th>
                   <th>Tipo</th>
                   <th>Predeterminada</th>
                   <th>Acción</th>
@@ -321,15 +455,27 @@ const Cuentas = ({ isOpen, onClose }) => {
                     <td>{account.banco}</td>
                     <td>{account.nombre}</td>
                     <td>${Number(account.saldo || 0).toLocaleString("es-CO")}</td>
+                    <td>{account.tipoCuenta === "credito"
+                      ? `$${Number(account.deudaActual || 0).toLocaleString("es-CO")} / $${Number(account.limiteCredito || 0).toLocaleString("es-CO")}`
+                      : "—"}</td>
+                    <td>
+                      <img
+                        className="cuentas-card-preview"
+                        src={getAccountCardImage(account)}
+                        alt={`Tarjeta de ${account.nombre}`}
+                        loading="lazy"
+                      />
+                    </td>
                     <td>
                       <span className={`cuentas-type cuentas-type--${account.tipoCuenta || "gastos"}`}>
-                        {account.tipoCuenta === "ahorros" ? "Ahorros" : "Gastos"}
+                        {account.tipoCuenta === "ahorros" ? "Ahorros" : account.tipoCuenta === "credito" ? "Crédito" : "Gastos"}
                       </span>
                     </td>
                     <td>
                       <button
                         className={`cuentas-default ${account.esDefault ? "cuentas-default--active" : ""}`}
                         type="button"
+                        disabled={account.tipoCuenta === "credito"}
                         onClick={() => handleSetDefault(account)}
                         title={account.esDefault ? "Es la cuenta predeterminada" : "Establecer como predeterminada"}
                       >

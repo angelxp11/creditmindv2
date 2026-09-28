@@ -180,10 +180,66 @@
 }
 
 .mov-checkbox-label input {
-  width: 17px;
-  height: 17px;
-  accent-color: var(--accent-color);
+  width: 18px;
+  height: 18px;
+  appearance: none;
+  -webkit-appearance: none;
+
+  border: 2px solid #cbd5e1;
+  border-radius: 5px;
+  background: #fff;
+
   cursor: pointer;
+  position: relative;
+  transition: all 0.2s ease;
+
+  display: inline-grid;
+  place-content: center;
+  flex-shrink: 0;
+}
+
+/* Hover */
+.mov-checkbox-label input:hover {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px color-mix(
+    in srgb,
+    var(--accent-color) 12%,
+    transparent
+  );
+}
+
+/* Marcado */
+.mov-checkbox-label input:checked {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+/* Check */
+.mov-checkbox-label input:checked::after {
+  content: "";
+  width: 5px;
+  height: 9px;
+
+  border: solid white;
+  border-width: 0 2px 2px 0;
+
+  transform: rotate(45deg);
+  margin-top: -2px;
+}
+
+/* Click */
+.mov-checkbox-label input:active {
+  transform: scale(0.92);
+}
+
+/* Accesibilidad */
+.mov-checkbox-label input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(
+    in srgb,
+    var(--accent-color) 20%,
+    transparent
+  );
 }
 
 /* ===== INPUTS Y SELECT ===== */
@@ -234,6 +290,122 @@
 .mov-select option {
   background: var(--bg-card);
   color: var(--text-primary);
+}
+
+.mov-account-picker {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 10px;
+}
+
+.mov-account-option {
+  display: grid;
+  grid-template-columns: 102px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mov-account-option:hover {
+  border-color: var(--accent-color);
+  background: var(--bg-hover);
+}
+
+.mov-account-option--selected {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
+.mov-account-option > img {
+  display: block;
+  width: 102px;
+  aspect-ratio: 1.586;
+  object-fit: contain;
+}
+
+.mov-account-option__details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.mov-account-option__details span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mov-account-option__details strong {
+  color: var(--text-title);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.mov-account-option__metrics,
+.mov-account-option__billing {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.mov-account-option__billing {
+  padding-top: 6px;
+  border-top: 1px solid var(--border-color);
+}
+
+.mov-account-option__details > .mov-account-option__billing {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.mov-account-option__data-row {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.85fr) minmax(0, 1.15fr);
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.mov-account-option__data-row small {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+}
+
+.mov-account-option__data-row strong {
+  text-align: right;
+  color: var(--text-primary);
+  font-size: 0.7rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.mov-account-option__check {
+  display: grid;
+  width: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  color: #fff;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.mov-account-option--selected .mov-account-option__check {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+  transform: scale(1.04);
 }
 
 /* ===== TAG CHIPS ===== */
@@ -564,6 +736,17 @@
 
   .mov-mode-switch {
     grid-template-columns: 1fr;
+  }
+
+  .mov-account-option {
+    grid-template-columns: 94px minmax(0, 1fr) 23px;
+    align-items: start;
+    gap: 9px;
+    padding: 9px;
+  }
+
+  .mov-account-option > img {
+    width: 94px;
   }
 
   .mov-budget {

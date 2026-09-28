@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Check } from "lucide-react";
 import { auth, db } from "../../server/api";
 import {
   collection,
@@ -9,9 +10,13 @@ import {
   getDocs,
   doc,
   updateDoc,
+  runTransaction,
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
+import { formatObligationDate, formatObligationSchedule, getNextDueDate } from "./obligaciones/obligationUtils";
+import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
+import { applyCreditPurchase, getCreditStatementDates } from "../cuentas/creditAccountUtils";
 import "./movimientos.css";
 
 const initialForm = {
@@ -52,6 +57,7 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [usePreviousDate, setUsePreviousDate] = useState(false);
   const [budgetForm, setBudgetForm] = useState(initialBudget);
   const [budgets, setBudgets] = useState([]);
+  const [obligations, setObligations] = useState([]);
 
   React.useEffect(() => {
     const fetchAccounts = async () => {
@@ -95,6 +101,16 @@ const Movimientos = ({ isOpen, onClose }) => {
             .sort((a, b) => String(a.fechaProgramada).localeCompare(String(b.fechaProgramada)))
         );
 
+        const obligationsSnapshot = await getDocs(
+          query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))
+        );
+        setObligations(
+          obligationsSnapshot.docs
+            .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
+            .filter((obligation) => obligation.activa)
+            .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)))
+        );
+
         // Cargar historial de movimientos
         const movimientosQuery = query(
           collection(db, "movimientos"),
@@ -123,6 +139,7 @@ const Movimientos = ({ isOpen, onClose }) => {
       setUsePreviousDate(false);
       setBudgetForm(initialBudget);
       setBudgets([]);
+      setObligations([]);
       fetchAccounts();
     }
   }, [isOpen]);
@@ -341,6 +358,100 @@ const Movimientos = ({ isOpen, onClose }) => {
     }
   };
 
+  const handlePayObligation = async (obligation) => {
+    const user = auth.currentUser;
+    if (!user) {
+      showToast("Necesitas iniciar sesión", "error");
+      return;
+    }
+
+    const obligationRef = doc(db, "obligaciones", obligation.id);
+    const accountRef = doc(db, "cuentas", obligation.cuentaId);
+    const movementRef = doc(collection(db, "movimientos"));
+    const paymentDate = new Date();
+    setLoading(true);
+
+    try {
+      const payment = await runTransaction(db, async (transaction) => {
+        const obligationSnapshot = await transaction.get(obligationRef);
+        if (!obligationSnapshot.exists() || !obligationSnapshot.data().activa) {
+          throw new Error("OBLIGATION_UNAVAILABLE");
+        }
+        const currentObligation = obligationSnapshot.data();
+        const accountSnapshot = await transaction.get(accountRef);
+        if (!accountSnapshot.exists()) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+
+        const account = accountSnapshot.data();
+        const amount = Number(currentObligation.valor || 0);
+        const balance = Number(account.saldo || 0);
+        if (account.usuarioId !== user.uid || (account.tipoCuenta || "gastos") !== "gastos") {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        if (amount <= 0 || balance < amount) {
+          throw new Error("INSUFFICIENT_BALANCE");
+        }
+
+        const nextDueDate = getNextDueDate(
+          currentObligation.frecuencia,
+          currentObligation.fechaProximoPago,
+          currentObligation.diaVencimiento,
+          currentObligation.diaSegundoPago,
+          currentObligation.proximoPagoNumero || 1
+        );
+        const nextPaymentNumber = currentObligation.frecuencia === "quincenal"
+          ? (currentObligation.proximoPagoNumero || 1) === 1 ? 2 : 1
+          : 1;
+        transaction.update(accountRef, {
+          saldo: balance - amount,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(obligationRef, {
+          fechaUltimoPeriodoPagado: currentObligation.fechaProximoPago,
+          fechaUltimoPago: serverTimestamp(),
+          fechaProximoPago: nextDueDate,
+          proximoPagoNumero: nextPaymentNumber,
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: obligation.cuentaId,
+          cuentaBanco: account.banco || "",
+          cuentaNombre: account.nombre || "",
+          valor: amount,
+          establecimiento: currentObligation.nombre,
+          tags: ["OBLIGACION"],
+          obligacionId: obligation.id,
+          origen: "obligacion",
+          fechaHora: paymentDate,
+          fechaCreacion: serverTimestamp(),
+        });
+
+        return { balance: balance - amount, nextDueDate, nextPaymentNumber };
+      });
+
+      setAccounts((current) => current.map((account) => account.id === obligation.cuentaId
+        ? { ...account, saldo: payment.balance }
+        : account));
+      setObligations((current) => current.map((item) => item.id === obligation.id
+        ? { ...item, fechaProximoPago: payment.nextDueDate, proximoPagoNumero: payment.nextPaymentNumber }
+        : item).sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+      showToast(`Obligación cubierta. Próximo pago: ${formatObligationDate(payment.nextDueDate)}`, "success");
+    } catch (error) {
+      console.error("Error pagando obligación:", error);
+      if (error.message === "INSUFFICIENT_BALANCE") {
+        showToast("Saldo insuficiente para pagar esta obligación", "error");
+      } else if (error.message === "OBLIGATION_UNAVAILABLE") {
+        showToast("Esta obligación ya no está activa", "error");
+      } else {
+        showToast("No se pudo pagar la obligación", "error");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
@@ -369,15 +480,65 @@ const Movimientos = ({ isOpen, onClose }) => {
 
     const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
     if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
-    if ((cuentaSeleccionada.tipoCuenta || "gastos") !== "gastos") {
+    if (cuentaSeleccionada.tipoCuenta === "ahorros") {
       showToast("Las cuentas de ahorros no se pueden usar para pagos", "error"); return;
     }
-    if (valor > getAvailableBalance(selectedCuentaId)) {
+    const isCreditAccount = cuentaSeleccionada.tipoCuenta === "credito";
+    if (!isCreditAccount && valor > getAvailableBalance(selectedCuentaId)) {
       showToast("Saldo disponible insuficiente: hay dinero reservado en presupuestos", "error"); return;
     }
 
     setLoading(true);
     try {
+      if (isCreditAccount) {
+        const accountRef = doc(db, "cuentas", selectedCuentaId);
+        const movementRef = doc(collection(db, "movimientos"));
+        const creditResult = await runTransaction(db, async (transaction) => {
+          const accountSnapshot = await transaction.get(accountRef);
+          if (!accountSnapshot.exists()) throw new Error("CREDIT_ACCOUNT_NOT_FOUND");
+
+          const account = accountSnapshot.data();
+          if (account.usuarioId !== user.uid || account.tipoCuenta !== "credito") {
+            throw new Error("CREDIT_ACCOUNT_INVALID");
+          }
+          const creditChanges = applyCreditPurchase(account, valor);
+
+          transaction.update(accountRef, {
+            ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(movementRef, {
+            userId: user.uid,
+            usuarioId: user.uid,
+            cuentaId: selectedCuentaId,
+            cuentaBanco: account.banco || "",
+            cuentaNombre: account.nombre || "",
+            valor,
+            establecimiento,
+            tags: finalTags,
+            tipo: "credito_compra",
+            origen: "tarjeta_credito",
+            fechaHora,
+            fechaCreacion: serverTimestamp(),
+          });
+
+          return { available: creditChanges.saldo, debt: creditChanges.deudaActual };
+        });
+
+        setAccounts((current) => current.map((account) => account.id === selectedCuentaId
+          ? { ...account, saldo: creditResult.available, deudaActual: creditResult.debt }
+          : account));
+        setHistorial((current) => [...current, {
+          id: Date.now().toString(),
+          establecimiento,
+          valor,
+          tags: finalTags,
+        }]);
+        showToast("Compra registrada con tarjeta de crédito", "success");
+        resetForm();
+        return;
+      }
+
       const cuentaRef = doc(db, "cuentas", selectedCuentaId);
       await updateDoc(cuentaRef, {
         saldo: cuentaSeleccionada.saldo - valor,
@@ -421,7 +582,9 @@ const Movimientos = ({ isOpen, onClose }) => {
       // Mantener modal abierto: no llamar a onClose()
     } catch (error) {
       console.error("Error guardando movimiento:", error);
-      showToast("No se pudo crear el movimiento", "error");
+      showToast(error.message === "CREDIT_LIMIT_EXCEEDED"
+        ? "La compra supera el cupo disponible de la tarjeta"
+        : "No se pudo crear el movimiento", "error");
     } finally {
       setLoading(false);
     }
@@ -472,19 +635,68 @@ const Movimientos = ({ isOpen, onClose }) => {
           {/* Cuenta */}
           <div className="mov-field">
             <span className="mov-label">Cuenta</span>
-            <select
-              className="mov-select"
-              name="cuentaId"
-              value={selectedCuentaId}
-              onChange={(e) => setSelectedCuentaId(e.target.value)}
-            >
-              <option value="">Selecciona una cuenta</option>
-              {accounts.filter((cuenta) => (cuenta.tipoCuenta || "gastos") === "gastos").map((cuenta) => (
-                <option key={cuenta.id} value={cuenta.id}>
-                  {cuenta.banco} – {cuenta.nombre} (${formatMoney(cuenta.saldo)})
-                </option>
-              ))}
-            </select>
+            <div className="mov-account-picker" role="radiogroup" aria-label="Selecciona una cuenta">
+              {accounts
+                .filter((cuenta) => mode === "pago"
+                  ? ["gastos", "credito"].includes(cuenta.tipoCuenta || "gastos")
+                  : (cuenta.tipoCuenta || "gastos") === "gastos")
+                .map((cuenta) => {
+                  const isSelected = selectedCuentaId === cuenta.id;
+                  const creditDates = cuenta.tipoCuenta === "credito"
+                    ? getCreditStatementDates(cuenta)
+                    : null;
+                  return (
+                    <button
+                      className={`mov-account-option${isSelected ? " mov-account-option--selected" : ""}`}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      key={cuenta.id}
+                      onClick={() => setSelectedCuentaId(cuenta.id)}
+                    >
+                      <img src={getAccountCardImage(cuenta)} alt="" />
+                      <span className="mov-account-option__details">
+                        <span>{cuenta.banco}</span>
+                        <strong>{cuenta.nombre}</strong>
+                        <span className="mov-account-option__metrics">
+                          {cuenta.tipoCuenta === "credito" ? (
+                            <>
+                              <span className="mov-account-option__data-row">
+                                <small>Cupo disponible</small>
+                                <strong>${formatMoney(cuenta.saldo)}</strong>
+                              </span>
+                              <span className="mov-account-option__data-row">
+                                <small>Deuda actual</small>
+                                <strong>${formatMoney(cuenta.deudaActual)}</strong>
+                              </span>
+                            </>
+                          ) : (
+                            <span className="mov-account-option__data-row">
+                              <small>Saldo</small>
+                              <strong>${formatMoney(cuenta.saldo)}</strong>
+                            </span>
+                          )}
+                        </span>
+                        {creditDates && (
+                          <span className="mov-account-option__billing">
+                            <span className="mov-account-option__data-row">
+                              <small>Fecha de corte</small>
+                              <strong>{creditDates.cutoffDate.toLocaleDateString("es-CO", { day: "numeric", month: "long" })}</strong>
+                            </span>
+                            <span className="mov-account-option__data-row">
+                              <small>Límite de pago</small>
+                              <strong>{creditDates.paymentDate.toLocaleDateString("es-CO", { day: "numeric", month: "long" })}</strong>
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                      <span className="mov-account-option__check" aria-hidden="true">
+                        {isSelected && <Check size={17} strokeWidth={2.5} />}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
           </div>
 
           {/* Valor */}
@@ -662,6 +874,38 @@ const Movimientos = ({ isOpen, onClose }) => {
                     onClick={() => handleAcceptBudget(budget)}
                   >
                     Aceptar y pagar
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {obligations.length > 0 && (
+          <section className="mov-budgets mov-obligations" aria-labelledby="obligations-title">
+            <div className="mov-budgets__heading">
+              <div>
+                <h3 id="obligations-title">Obligaciones · pagar después</h3>
+                <p>Al pagar, se registra el movimiento y se programa el siguiente periodo.</p>
+              </div>
+              <span className="mov-budgets__count">{obligations.length}</span>
+            </div>
+            <div className="mov-budgets__list">
+              {obligations.map((obligation) => (
+                <article className="mov-budget" key={obligation.id}>
+                  <div>
+                    <strong>{obligation.nombre}</strong>
+                    <span>
+                      ${formatMoney(obligation.valor)} · {obligation.cuentaNombre} · {formatObligationSchedule(obligation)} · Próximo: {formatObligationDate(obligation.fechaProximoPago)}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="mov-budget__accept"
+                    disabled={loading}
+                    onClick={() => handlePayObligation(obligation)}
+                  >
+                    Pagar obligación
                   </button>
                 </article>
               ))}
