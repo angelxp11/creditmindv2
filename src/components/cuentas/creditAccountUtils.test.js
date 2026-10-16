@@ -1,4 +1,4 @@
-import { applyCreditPayment, applyCreditPurchase, getCreditStatementDates } from "./creditAccountUtils";
+import { applyCreditAdvance, applyCreditPayment, applyCreditPurchase, getCreditStatementDates } from "./creditAccountUtils";
 
 const creditAccount = {
   tipoCuenta: "credito",
@@ -16,6 +16,17 @@ test("a credit purchase decreases available limit and increases debt", () => {
 
 test("a purchase cannot exceed the available credit", () => {
   expect(() => applyCreditPurchase(creditAccount, 701)).toThrow("CREDIT_LIMIT_EXCEEDED");
+});
+
+test("a credit advance adds its configured charge to the card debt", () => {
+  expect(applyCreditAdvance({ ...creditAccount, cargoAvance: 25 }, 250)).toEqual({
+    saldo: 425,
+    deudaActual: 575,
+  });
+});
+
+test("a credit advance cannot exceed the available credit after its charge", () => {
+  expect(() => applyCreditAdvance({ ...creditAccount, cargoAvance: 25 }, 700)).toThrow("CREDIT_LIMIT_EXCEEDED");
 });
 
 test("a card payment decreases debt and restores available limit", () => {

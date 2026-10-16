@@ -16,7 +16,7 @@ import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
 import { formatObligationDate, formatObligationSchedule, getNextDueDate } from "./obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
-import { applyCreditPurchase, getCreditStatementDates } from "../cuentas/creditAccountUtils";
+import { applyCreditAdvance, applyCreditPurchase, getCreditStatementDates } from "../cuentas/creditAccountUtils";
 import "./movimientos.css";
 
 const initialForm = {
@@ -44,6 +44,18 @@ const getCurrentDateTimeValue = () => {
   return new Date(now.getTime() - timezoneOffset).toISOString().slice(0, 16);
 };
 
+const formatSignedMoneyInput = (value) => {
+  const sign = String(value).trim().startsWith("-") ? "-" : "";
+  const digits = String(value).replace(/\D/g, "");
+  const formatted = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return sign && formatted ? `-${formatted}` : formatted;
+};
+
+const parseSignedMoney = (value) => {
+  if (value === "-") return Number.NaN;
+  return Number(String(value).replace(/\./g, ""));
+};
+
 const Movimientos = ({ isOpen, onClose }) => {
   const [formValues, setFormValues] = useState(initialForm);
   const [tags, setTags] = useState([]);
@@ -58,6 +70,9 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [budgetForm, setBudgetForm] = useState(initialBudget);
   const [budgets, setBudgets] = useState([]);
   const [obligations, setObligations] = useState([]);
+  const [obligationPaymentAmounts, setObligationPaymentAmounts] = useState({});
+  const [recurringIncomes, setRecurringIncomes] = useState([]);
+  const [recurringIncomeAmounts, setRecurringIncomeAmounts] = useState({});
 
   React.useEffect(() => {
     const fetchAccounts = async () => {
@@ -104,12 +119,31 @@ const Movimientos = ({ isOpen, onClose }) => {
         const obligationsSnapshot = await getDocs(
           query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))
         );
-        setObligations(
-          obligationsSnapshot.docs
-            .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
-            .filter((obligation) => obligation.activa)
-            .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)))
+        const recurringIncomesSnapshot = await getDocs(
+          query(collection(db, "ingresosRecurrentes"), where("usuarioId", "==", user.uid))
         );
+        const activeObligations = obligationsSnapshot.docs
+          .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
+          .filter((obligation) => obligation.activa)
+          .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)));
+        setObligations(activeObligations);
+        setObligationPaymentAmounts(Object.fromEntries(
+          activeObligations.map((obligation) => [
+            obligation.id,
+            formatMoneyInput(String(Number(obligation.valor || 0))),
+          ])
+        ));
+        const activeRecurringIncomes = recurringIncomesSnapshot.docs
+          .map((incomeDoc) => ({ id: incomeDoc.id, ...incomeDoc.data() }))
+          .filter((income) => income.activa)
+          .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)));
+        setRecurringIncomes(activeRecurringIncomes);
+        setRecurringIncomeAmounts(Object.fromEntries(
+          activeRecurringIncomes.map((income) => [
+            income.id,
+            "0",
+          ])
+        ));
 
         // Cargar historial de movimientos
         const movimientosQuery = query(
@@ -140,6 +174,9 @@ const Movimientos = ({ isOpen, onClose }) => {
       setBudgetForm(initialBudget);
       setBudgets([]);
       setObligations([]);
+      setObligationPaymentAmounts({});
+      setRecurringIncomes([]);
+      setRecurringIncomeAmounts({});
       fetchAccounts();
     }
   }, [isOpen]);
@@ -256,6 +293,8 @@ const Movimientos = ({ isOpen, onClose }) => {
     return Number(account?.saldo || 0) - reserved;
   };
 
+  const selectedAccount = accounts.find((account) => account.id === selectedCuentaId);
+
   const resetForm = () => {
     setFormValues({ ...initialForm, fechaHora: getCurrentDateTimeValue() });
     setTags([]);
@@ -263,6 +302,22 @@ const Movimientos = ({ isOpen, onClose }) => {
     setSugerencia(null);
     setUsePreviousDate(false);
     setBudgetForm(initialBudget);
+  };
+
+  const changeMode = (nextMode) => {
+    setMode(nextMode);
+    if (nextMode !== "pago") {
+      setUsePreviousDate(false);
+    }
+    if (nextMode === "avance") {
+      const selectedCreditAccount = accounts.find(
+        (account) => account.id === selectedCuentaId && account.tipoCuenta === "credito"
+      );
+      const firstCreditAccount = accounts.find((account) => account.tipoCuenta === "credito");
+      if (!selectedCreditAccount && firstCreditAccount) {
+        setSelectedCuentaId(firstCreditAccount.id);
+      }
+    }
   };
 
   const handleCreateBudget = async () => {
@@ -358,10 +413,14 @@ const Movimientos = ({ isOpen, onClose }) => {
     }
   };
 
-  const handlePayObligation = async (obligation) => {
+  const handlePayObligation = async (obligation, amount) => {
     const user = auth.currentUser;
     if (!user) {
       showToast("Necesitas iniciar sesión", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      showToast("Ingresa el valor realmente pagado", "error");
       return;
     }
 
@@ -378,18 +437,20 @@ const Movimientos = ({ isOpen, onClose }) => {
           throw new Error("OBLIGATION_UNAVAILABLE");
         }
         const currentObligation = obligationSnapshot.data();
+        if (currentObligation.usuarioId !== user.uid) {
+          throw new Error("OBLIGATION_UNAVAILABLE");
+        }
         const accountSnapshot = await transaction.get(accountRef);
         if (!accountSnapshot.exists()) {
           throw new Error("ACCOUNT_UNAVAILABLE");
         }
 
         const account = accountSnapshot.data();
-        const amount = Number(currentObligation.valor || 0);
         const balance = Number(account.saldo || 0);
         if (account.usuarioId !== user.uid || (account.tipoCuenta || "gastos") !== "gastos") {
           throw new Error("ACCOUNT_UNAVAILABLE");
         }
-        if (amount <= 0 || balance < amount) {
+        if (balance < amount) {
           throw new Error("INSUFFICIENT_BALANCE");
         }
 
@@ -452,6 +513,111 @@ const Movimientos = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleAcceptRecurringIncome = async (income, amount) => {
+    const user = auth.currentUser;
+    if (!user) {
+      showToast("Necesitas iniciar sesión", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      showToast("Ingresa el valor realmente recibido", "error");
+      return;
+    }
+
+    const incomeRef = doc(db, "ingresosRecurrentes", income.id);
+    const accountRef = doc(db, "cuentas", income.cuentaId);
+    const movementRef = doc(collection(db, "movimientos"));
+    const receivedAt = new Date();
+
+    setLoading(true);
+    try {
+      const payment = await runTransaction(db, async (transaction) => {
+        const incomeSnapshot = await transaction.get(incomeRef);
+        if (!incomeSnapshot.exists() || !incomeSnapshot.data().activa ||
+          incomeSnapshot.data().usuarioId !== user.uid) {
+          throw new Error("RECURRING_INCOME_UNAVAILABLE");
+        }
+        const accountSnapshot = await transaction.get(accountRef);
+        if (!accountSnapshot.exists()) throw new Error("ACCOUNT_UNAVAILABLE");
+        const currentIncome = incomeSnapshot.data();
+        const account = accountSnapshot.data();
+        if (account.usuarioId !== user.uid || account.tipoCuenta === "credito") {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        const balance = Number(account.saldo || 0);
+        if (!Number.isSafeInteger(balance + amount)) {
+          throw new Error("INVALID_INCOME_AMOUNT");
+        }
+
+        const currentPaymentNumber = Number(currentIncome.proximoPagoNumero || 1);
+        const nextPaymentNumber = currentIncome.frecuencia === "quincenal"
+          ? currentPaymentNumber === 1 ? 2 : 1
+          : 1;
+        const nextDueDate = getNextDueDate(
+          currentIncome.frecuencia || "mensual",
+          currentIncome.fechaProximoPago,
+          currentIncome.diaVencimiento,
+          currentIncome.diaSegundoPago,
+          currentPaymentNumber
+        );
+        transaction.update(accountRef, {
+          saldo: balance + amount,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(incomeRef, {
+          fechaUltimoIngreso: currentIncome.fechaProximoPago,
+          fechaUltimoPago: serverTimestamp(),
+          fechaProximoPago: nextDueDate,
+          proximoPagoNumero: nextPaymentNumber,
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: currentIncome.cuentaId,
+          cuentaBanco: account.banco || "",
+          cuentaNombre: account.nombre || "",
+          valor: amount,
+          descripcion: currentIncome.nombre,
+          tipo: "ingreso_recurrente",
+          origen: "ingreso_recurrente",
+          ingresoRecurrenteId: income.id,
+          fechaHora: receivedAt,
+          fechaCreacion: serverTimestamp(),
+        });
+        return { balance: balance + amount, nextDueDate, nextPaymentNumber };
+      });
+
+      setAccounts((current) => current.map((account) => account.id === income.cuentaId
+        ? { ...account, saldo: payment.balance }
+        : account));
+      setRecurringIncomes((current) => current.map((item) => item.id === income.id
+        ? {
+          ...item,
+          fechaProximoPago: payment.nextDueDate,
+          proximoPagoNumero: payment.nextPaymentNumber,
+        }
+        : item).sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+      setRecurringIncomeAmounts((current) => ({
+        ...current,
+        [income.id]: "0",
+      }));
+      showToast(`Ingreso registrado. Próximo: ${formatObligationDate(payment.nextDueDate)}`, "success");
+    } catch (error) {
+      console.error("Error aceptando ingreso recurrente:", error);
+      if (error.message === "RECURRING_INCOME_UNAVAILABLE") {
+        showToast("Este ingreso recurrente ya no está activo", "error");
+      } else if (error.message === "ACCOUNT_UNAVAILABLE") {
+        showToast("La cuenta receptora ya no está disponible", "error");
+      } else if (error.message === "INVALID_INCOME_AMOUNT") {
+        showToast("El saldo resultante supera el valor permitido", "error");
+      } else {
+        showToast("No se pudo registrar el ingreso", "error");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
@@ -480,6 +646,92 @@ const Movimientos = ({ isOpen, onClose }) => {
 
     const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
     if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
+    if (mode === "avance") {
+      if (cuentaSeleccionada.tipoCuenta !== "credito") {
+        showToast("Selecciona una tarjeta de crédito para registrar el avance", "error");
+        return;
+      }
+
+      const cargoAvance = Number(cuentaSeleccionada.cargoAvance);
+      const cuotas = Number(cuentaSeleccionada.maximoCuotasAvance);
+      if (!Number.isSafeInteger(cargoAvance) || cargoAvance < 0 ||
+        !Number.isSafeInteger(cuotas) || cuotas < 1) {
+        showToast("Configura el cargo por avance y el máximo de cuotas en la cuenta", "error");
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const accountRef = doc(db, "cuentas", selectedCuentaId);
+        const movementRef = doc(collection(db, "movimientos"));
+        const creditResult = await runTransaction(db, async (transaction) => {
+          const accountSnapshot = await transaction.get(accountRef);
+          if (!accountSnapshot.exists()) throw new Error("CREDIT_ACCOUNT_NOT_FOUND");
+
+          const account = accountSnapshot.data();
+          if (account.usuarioId !== user.uid || account.tipoCuenta !== "credito") {
+            throw new Error("CREDIT_ACCOUNT_INVALID");
+          }
+          const creditChanges = applyCreditAdvance(account, valor);
+          const cargoConfigurado = Number(account.cargoAvance);
+          const cuotasConfiguradas = Number(account.maximoCuotasAvance);
+          if (!Number.isSafeInteger(cuotasConfiguradas) || cuotasConfiguradas < 1) {
+            throw new Error("INVALID_CREDIT_ADVANCE_INSTALLMENTS");
+          }
+          const valorTotal = valor + cargoConfigurado;
+
+          transaction.update(accountRef, {
+            ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(movementRef, {
+            userId: user.uid,
+            usuarioId: user.uid,
+            cuentaId: selectedCuentaId,
+            cuentaBanco: account.banco || "",
+            cuentaNombre: account.nombre || "",
+            valor: valorTotal,
+            valorAvance: valor,
+            cargoAvance: cargoConfigurado,
+            cuotas: cuotasConfiguradas,
+            establecimiento,
+            tags: finalTags,
+            tipo: "credito_avance",
+            origen: "tarjeta_credito",
+            fechaHora,
+            fechaCreacion: serverTimestamp(),
+          });
+
+          return {
+            available: creditChanges.saldo,
+            debt: creditChanges.deudaActual,
+            valorTotal,
+            installments: cuotasConfiguradas,
+          };
+        });
+
+        setAccounts((current) => current.map((account) => account.id === selectedCuentaId
+          ? { ...account, saldo: creditResult.available, deudaActual: creditResult.debt }
+          : account));
+        setHistorial((current) => [...current, {
+          id: Date.now().toString(),
+          establecimiento,
+          valor: creditResult.valorTotal,
+          tags: finalTags,
+        }]);
+        showToast(`Avance registrado por $${formatMoney(creditResult.valorTotal)} en ${creditResult.installments} cuotas`, "success");
+        resetForm();
+        return;
+      } catch (error) {
+        console.error("Error guardando avance de tarjeta:", error);
+        showToast(error.message === "CREDIT_LIMIT_EXCEEDED"
+          ? "El avance y su cargo superan el cupo disponible de la tarjeta"
+          : "No se pudo registrar el avance", "error");
+        return;
+      } finally {
+        setLoading(false);
+      }
+    }
     if (cuentaSeleccionada.tipoCuenta === "ahorros") {
       showToast("Las cuentas de ahorros no se pueden usar para pagos", "error"); return;
     }
@@ -602,28 +854,37 @@ const Movimientos = ({ isOpen, onClose }) => {
         {/* HEADER */}
         <div className="mov-header">
           <div className="mov-header-text">
-            <h2>{mode === "pago" ? "Registrar pago" : "Crear presupuesto"}</h2>
+            <h2>{mode === "pago" ? "Registrar pago" : mode === "avance" ? "Registrar avance" : "Crear presupuesto"}</h2>
             <p>
               {mode === "pago"
                 ? "Llena los datos de la compra y pulsa Pagar."
+                : mode === "avance"
+                ? "Registra un avance con tarjeta; el cargo configurado se suma al valor y se difiere al máximo de cuotas."
                 : "Reserva una parte de tu saldo y decide después cuándo aceptarla."}
             </p>
           </div>
           <button className="mov-close" onClick={onClose}>Cerrar</button>
         </div>
 
-        <div className="mov-mode-switch" role="tablist" aria-label="Modo de pago">
+        <div className="mov-mode-switch" role="tablist" aria-label="Tipo de movimiento">
           <button
             type="button"
             className={mode === "pago" ? "mov-mode-btn mov-mode-btn--active" : "mov-mode-btn"}
-            onClick={() => setMode("pago")}
+            onClick={() => changeMode("pago")}
           >
             Pagar ahora
           </button>
           <button
             type="button"
+            className={mode === "avance" ? "mov-mode-btn mov-mode-btn--active" : "mov-mode-btn"}
+            onClick={() => changeMode("avance")}
+          >
+            Avance de tarjeta
+          </button>
+          <button
+            type="button"
             className={mode === "presupuesto" ? "mov-mode-btn mov-mode-btn--active" : "mov-mode-btn"}
-            onClick={() => setMode("presupuesto")}
+            onClick={() => changeMode("presupuesto")}
           >
             Crear presupuesto
           </button>
@@ -639,6 +900,8 @@ const Movimientos = ({ isOpen, onClose }) => {
               {accounts
                 .filter((cuenta) => mode === "pago"
                   ? ["gastos", "credito"].includes(cuenta.tipoCuenta || "gastos")
+                  : mode === "avance"
+                  ? cuenta.tipoCuenta === "credito"
                   : (cuenta.tipoCuenta || "gastos") === "gastos")
                 .map((cuenta) => {
                   const isSelected = selectedCuentaId === cuenta.id;
@@ -701,8 +964,11 @@ const Movimientos = ({ isOpen, onClose }) => {
 
           {/* Valor */}
           <div className="mov-field">
-            <span className="mov-label">Valor</span>
+            <label className="mov-label" htmlFor="movement-value">
+              {mode === "avance" ? "Valor del avance" : "Valor"}
+            </label>
             <input
+              id="movement-value"
               className="mov-input"
               name="valor"
               type="text"
@@ -712,6 +978,28 @@ const Movimientos = ({ isOpen, onClose }) => {
               placeholder="0"
             />
           </div>
+
+          {mode === "avance" && (
+            <div className="mov-field">
+              <span className="mov-label">Detalle del avance</span>
+              <div className="mov-account-option__metrics">
+                <span className="mov-account-option__data-row">
+                  <small>Cargo por avance</small>
+                  <strong>${formatMoney(selectedAccount?.cargoAvance || 0)}</strong>
+                </span>
+                <span className="mov-account-option__data-row">
+                  <small>Máximo de cuotas</small>
+                  <strong>{selectedAccount?.maximoCuotasAvance || "Sin configurar"}</strong>
+                </span>
+                <span className="mov-account-option__data-row">
+                  <small>Total cargado a la tarjeta</small>
+                  <strong>
+                    ${formatMoney(Number(formValues.valor.replace(/\./g, "") || 0) + Number(selectedAccount?.cargoAvance || 0))}
+                  </strong>
+                </span>
+              </div>
+            </div>
+          )}
 
           {mode === "pago" && (
             <div className="mov-field">
@@ -776,7 +1064,7 @@ const Movimientos = ({ isOpen, onClose }) => {
               type="text"
               value={formValues.establecimiento}
               onChange={handleChange}
-              placeholder="Nombre del comercio"
+              placeholder={mode === "avance" ? "Cajero o descripción del avance" : "Nombre del comercio"}
             />
 
             {/* Sugerencia */}
@@ -846,7 +1134,7 @@ const Movimientos = ({ isOpen, onClose }) => {
           </div>
 
           <button className="mov-submit" type="submit">
-            {mode === "pago" ? "Pagar" : "Guardar presupuesto"}
+            {mode === "pago" ? "Pagar" : mode === "avance" ? "Registrar avance" : "Guardar presupuesto"}
           </button>
         </form>
 
@@ -899,14 +1187,94 @@ const Movimientos = ({ isOpen, onClose }) => {
                       ${formatMoney(obligation.valor)} · {obligation.cuentaNombre} · {formatObligationSchedule(obligation)} · Próximo: {formatObligationDate(obligation.fechaProximoPago)}
                     </span>
                   </div>
+                  <div className="mov-obligation-payment">
+                  <label>
+                    Valor realmente pagado
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      required
+                      aria-label={`Valor realmente pagado de ${obligation.nombre}`}
+                      value={obligationPaymentAmounts[obligation.id] ?? ""}
+                      onChange={(event) => setObligationPaymentAmounts((current) => ({
+                        ...current,
+                        [obligation.id]: formatMoneyInput(event.target.value),
+                      }))}
+                    />
+                  </label>
                   <button
                     type="button"
                     className="mov-budget__accept"
                     disabled={loading}
-                    onClick={() => handlePayObligation(obligation)}
+                    onClick={() => handlePayObligation(
+                      obligation,
+                      Number((obligationPaymentAmounts[obligation.id] || "").replace(/\./g, ""))
+                    )}
                   >
                     Pagar obligación
                   </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {recurringIncomes.length > 0 && (
+          <section className="mov-budgets mov-recurring-incomes" aria-labelledby="recurring-incomes-title">
+            <div className="mov-budgets__heading">
+              <div>
+                <h3 id="recurring-incomes-title">Ingresos mensuales · aceptar</h3>
+                <p>Ajusta el valor hacia arriba o abajo según lo que recibiste este mes.</p>
+              </div>
+              <span className="mov-budgets__count">{recurringIncomes.length}</span>
+            </div>
+            <div className="mov-budgets__list">
+              {recurringIncomes.map((income) => (
+                <article className="mov-budget" key={income.id}>
+                  <div>
+                    <strong>{income.nombre}</strong>
+                    <span>
+                      Base: ${formatMoney(income.valor)} · {income.cuentaNombre} · Próximo: {formatObligationDate(income.fechaProximoPago)}
+                    </span>
+                    <span>
+                      Total a recibir: {
+                        Number.isSafeInteger(Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0")) &&
+                        Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0") > 0
+                          ? `$${formatMoney(Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0"))}`
+                          : "—"
+                      }
+                    </span>
+                  </div>
+                  <div className="mov-obligation-payment">
+                    <label>
+                      Ajuste (+ / −)
+                      <input
+                        type="text"
+                        inputMode="text"
+                        required
+                        aria-label={`Ajuste al ingreso esperado de ${income.nombre}`}
+                        value={recurringIncomeAmounts[income.id] ?? ""}
+                        onChange={(event) => setRecurringIncomeAmounts((current) => ({
+                          ...current,
+                          [income.id]: formatSignedMoneyInput(event.target.value),
+                        }))}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="mov-budget__accept"
+                      disabled={loading || !Number.isSafeInteger(
+                        Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0")
+                      ) || Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0") <= 0}
+                      onClick={() => handleAcceptRecurringIncome(
+                        income,
+                        Number(income.valor) + parseSignedMoney(recurringIncomeAmounts[income.id] ?? "0")
+                      )}
+                    >
+                      Aceptar ingreso
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>

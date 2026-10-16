@@ -53,6 +53,20 @@ export const applyCreditPurchase = (account, amount) => {
   };
 };
 
+export const applyCreditAdvance = (account, amount) => {
+  const charge = Number(account?.cargoAvance);
+  if (!Number.isSafeInteger(charge) || charge < 0) {
+    throw new Error("INVALID_CREDIT_ADVANCE_CHARGE");
+  }
+
+  const totalAmount = amount + charge;
+  if (!Number.isSafeInteger(totalAmount)) {
+    throw new Error("INVALID_CREDIT_AMOUNT");
+  }
+
+  return applyCreditPurchase(account, totalAmount);
+};
+
 export const applyCreditPayment = (account, amount) => {
   if (account?.tipoCuenta !== "credito") {
     throw new Error("NOT_A_CREDIT_ACCOUNT");

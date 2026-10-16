@@ -7,6 +7,7 @@ import {
   getDocs,
   addDoc,
   updateDoc,
+  runTransaction,
   serverTimestamp,
   doc,
 } from "firebase/firestore";
@@ -25,6 +26,8 @@ const initialForm = {
   fechaLimitePago: "",
   tasaInteresMensual: "",
   tasaEfectivaAnual: "",
+  cargoAvance: "",
+  maximoCuotasAvance: "",
   tipoCuenta: "gastos",
   imagenTarjeta: "debito",
 };
@@ -41,6 +44,9 @@ const Cuentas = ({ isOpen, onClose }) => {
   const [formValues, setFormValues] = useState(initialForm);
   const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [liquidationAccountId, setLiquidationAccountId] = useState("");
+  const [liquidationDestinationId, setLiquidationDestinationId] = useState("");
+  const [liquidationAmount, setLiquidationAmount] = useState("");
 
   useEffect(() => {
     if (!isOpen) {
@@ -86,7 +92,7 @@ const Cuentas = ({ isOpen, onClose }) => {
   const handleChange = (event) => {
   const { name, value } = event.target;
 
-  if (["saldo", "limiteCredito", "deudaActual"].includes(name)) {
+  if (["saldo", "limiteCredito", "deudaActual", "cargoAvance"].includes(name)) {
     const soloNumeros = value.replace(/\D/g, "");
 
     const formateado = soloNumeros.replace(
@@ -106,6 +112,14 @@ const Cuentas = ({ isOpen, onClose }) => {
     setFormValues((prev) => ({
       ...prev,
       [name]: value.replace(/\D/g, "").slice(0, 2),
+    }));
+    return;
+  }
+
+  if (name === "maximoCuotasAvance") {
+    setFormValues((prev) => ({
+      ...prev,
+      [name]: value.replace(/\D/g, ""),
     }));
     return;
   }
@@ -141,6 +155,8 @@ const Cuentas = ({ isOpen, onClose }) => {
     const fechaLimitePago = Number(formValues.fechaLimitePago);
     const tasaInteresMensual = Number(formValues.tasaInteresMensual);
     const tasaEfectivaAnual = Number(formValues.tasaEfectivaAnual);
+    const cargoAvance = Number((formValues.cargoAvance || "").replace(/\./g, ""));
+    const maximoCuotasAvance = Number(formValues.maximoCuotasAvance);
     const imagenTarjeta = ACCOUNT_CARD_OPTIONS.some((option) => option.key === formValues.imagenTarjeta)
       ? formValues.imagenTarjeta
       : getAccountCardKey(tipoCuenta);
@@ -166,11 +182,24 @@ const Cuentas = ({ isOpen, onClose }) => {
       !Number.isInteger(fechaCorte) || fechaCorte < 1 || fechaCorte > 31 ||
       !Number.isInteger(fechaLimitePago) || fechaLimitePago < 1 || fechaLimitePago > 31 ||
       formValues.tasaInteresMensual === "" || !Number.isFinite(tasaInteresMensual) || tasaInteresMensual < 0 ||
-      formValues.tasaEfectivaAnual === "" || !Number.isFinite(tasaEfectivaAnual) || tasaEfectivaAnual < 0
+      formValues.tasaEfectivaAnual === "" || !Number.isFinite(tasaEfectivaAnual) || tasaEfectivaAnual < 0 ||
+      formValues.cargoAvance === "" || !Number.isSafeInteger(cargoAvance) || cargoAvance < 0 ||
+      formValues.maximoCuotasAvance === "" || !Number.isSafeInteger(maximoCuotasAvance) || maximoCuotasAvance < 1
     )) {
-      showToast("Completa los días de corte y pago y ambas tasas de interés", "error");
+      showToast("Completa los días, tasas, cargo por avance y máximo de cuotas correctamente", "error");
       return;
     }
+
+    const creditTerms = {
+      limiteCredito: isCreditAccount ? limiteCredito : null,
+      deudaActual: isCreditAccount ? deudaActual : null,
+      fechaCorte: isCreditAccount ? fechaCorte : null,
+      fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
+      tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
+      tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+      cargoAvance: isCreditAccount ? cargoAvance : null,
+      maximoCuotasAvance: isCreditAccount ? maximoCuotasAvance : null,
+    };
 
     setLoading(true);
 
@@ -182,12 +211,7 @@ const Cuentas = ({ isOpen, onClose }) => {
           nombre,
           saldo,
           tipoCuenta,
-          limiteCredito: isCreditAccount ? limiteCredito : null,
-          deudaActual: isCreditAccount ? deudaActual : null,
-          fechaCorte: isCreditAccount ? fechaCorte : null,
-          fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
-          tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
-          tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+          ...creditTerms,
           imagenTarjeta,
           ultimaActualizacion: serverTimestamp(),
         });
@@ -195,7 +219,7 @@ const Cuentas = ({ isOpen, onClose }) => {
         setAccounts((prev) =>
           prev.map((account) =>
             account.id === editingId
-              ? { ...account, banco, nombre, saldo, tipoCuenta, limiteCredito: isCreditAccount ? limiteCredito : null, deudaActual: isCreditAccount ? deudaActual : null, fechaCorte: isCreditAccount ? fechaCorte : null, fechaLimitePago: isCreditAccount ? fechaLimitePago : null, tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null, tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null, imagenTarjeta }
+              ? { ...account, banco, nombre, saldo, tipoCuenta, ...creditTerms, imagenTarjeta }
               : account
           )
         );
@@ -206,12 +230,7 @@ const Cuentas = ({ isOpen, onClose }) => {
           nombre,
           saldo,
           tipoCuenta,
-          limiteCredito: isCreditAccount ? limiteCredito : null,
-          deudaActual: isCreditAccount ? deudaActual : null,
-          fechaCorte: isCreditAccount ? fechaCorte : null,
-          fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
-          tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
-          tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+          ...creditTerms,
           imagenTarjeta,
           usuarioId: user.uid,
           fechaCreacion: serverTimestamp(),
@@ -225,12 +244,7 @@ const Cuentas = ({ isOpen, onClose }) => {
             nombre,
             saldo,
             tipoCuenta,
-            limiteCredito: isCreditAccount ? limiteCredito : null,
-            deudaActual: isCreditAccount ? deudaActual : null,
-            fechaCorte: isCreditAccount ? fechaCorte : null,
-            fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
-            tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
-            tasaEfectivaAnual: isCreditAccount ? tasaEfectivaAnual : null,
+            ...creditTerms,
             imagenTarjeta,
             usuarioId: user.uid,
           },
@@ -261,6 +275,10 @@ const Cuentas = ({ isOpen, onClose }) => {
     fechaLimitePago: account.fechaLimitePago || "",
     tasaInteresMensual: account.tasaInteresMensual ?? "",
     tasaEfectivaAnual: account.tasaEfectivaAnual ?? "",
+    cargoAvance: account.cargoAvance === null || account.cargoAvance === undefined
+      ? ""
+      : Number(account.cargoAvance).toLocaleString("es-CO"),
+    maximoCuotasAvance: account.maximoCuotasAvance ?? "",
   tipoCuenta: account.tipoCuenta || "gastos",
     imagenTarjeta: account.imagenTarjeta || getAccountCardKey(account.tipoCuenta),
 });
@@ -303,6 +321,127 @@ const Cuentas = ({ isOpen, onClose }) => {
     } catch (error) {
       console.error("Error al establecer cuenta predeterminada:", error);
       showToast("No se pudo establecer la cuenta predeterminada", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenLiquidation = (account) => {
+    const destinations = accounts.filter(
+      (candidate) => candidate.id !== account.id && candidate.tipoCuenta !== "credito"
+    );
+    setLiquidationAccountId(account.id);
+    setLiquidationDestinationId(destinations[0]?.id || "");
+    setLiquidationAmount(Number(account.saldo || 0).toLocaleString("es-CO"));
+  };
+
+  const handleLiquidateSavings = async (event) => {
+    event.preventDefault();
+    const user = auth.currentUser;
+    const receivedAmount = Number(liquidationAmount.replace(/\./g, ""));
+    const source = accounts.find((account) => account.id === liquidationAccountId);
+    const destination = accounts.find((account) => account.id === liquidationDestinationId);
+
+    if (!user) {
+      showToast("No hay un usuario autenticado", "error");
+      return;
+    }
+    if (!source || source.tipoCuenta !== "ahorros") {
+      showToast("Selecciona una alcancía válida", "error");
+      return;
+    }
+    if (!destination || destination.id === source.id || destination.tipoCuenta === "credito") {
+      showToast("Selecciona una cuenta de destino válida", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(receivedAmount) || receivedAmount <= 0) {
+      showToast("Ingresa el valor total recibido, incluidos los intereses", "error");
+      return;
+    }
+
+    setLoading(true);
+    const sourceRef = doc(db, "cuentas", source.id);
+    const destinationRef = doc(db, "cuentas", destination.id);
+    const movementRef = doc(collection(db, "movimientos"));
+    let sourceBalance = 0;
+    let destinationBalance = 0;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const sourceSnapshot = await transaction.get(sourceRef);
+        const destinationSnapshot = await transaction.get(destinationRef);
+        if (!sourceSnapshot.exists() || !destinationSnapshot.exists()) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+
+        const sourceData = sourceSnapshot.data();
+        const destinationData = destinationSnapshot.data();
+        sourceBalance = Number(sourceData.saldo || 0);
+        destinationBalance = Number(destinationData.saldo || 0);
+        if (
+          sourceData.usuarioId !== user.uid ||
+          sourceData.tipoCuenta !== "ahorros" ||
+          destinationData.usuarioId !== user.uid ||
+          destinationData.tipoCuenta === "credito"
+        ) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        if (!Number.isSafeInteger(sourceBalance) || sourceBalance <= 0) {
+          throw new Error("EMPTY_SAVINGS");
+        }
+        if (!Number.isSafeInteger(destinationBalance + receivedAmount)) {
+          throw new Error("INVALID_DESTINATION_BALANCE");
+        }
+
+        transaction.update(sourceRef, {
+          saldo: 0,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(destinationRef, {
+          saldo: destinationBalance + receivedAmount,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: source.id,
+          cuentaBanco: sourceData.banco || "",
+          cuentaNombre: sourceData.nombre || "",
+          cuentaDestinoId: destination.id,
+          cuentaDestinoBanco: destinationData.banco || "",
+          cuentaDestinoNombre: destinationData.nombre || "",
+          tipo: "transferencia",
+          origen: "liquidacion_alcancia",
+          valor: sourceBalance,
+          valorDestino: receivedAmount,
+          descripcion: "LIQUIDACIÓN DE ALCANCÍA (INCLUYE INTERESES)",
+          fechaHora: new Date(),
+          fechaCreacion: serverTimestamp(),
+        });
+      });
+
+      setAccounts((current) => current.map((account) => {
+        if (account.id === source.id) return { ...account, saldo: 0 };
+        if (account.id === destination.id) {
+          return { ...account, saldo: destinationBalance + receivedAmount };
+        }
+        return account;
+      }));
+      setLiquidationAccountId("");
+      setLiquidationDestinationId("");
+      setLiquidationAmount("");
+      showToast("Alcancía liquidada y dinero transferido correctamente", "success");
+    } catch (error) {
+      console.error("Error liquidando alcancía:", error);
+      if (error.message === "EMPTY_SAVINGS") {
+        showToast("La alcancía no tiene saldo para liquidar", "error");
+      } else if (error.message === "ACCOUNT_UNAVAILABLE") {
+        showToast("La alcancía o la cuenta de destino ya no está disponible", "error");
+      } else if (error.message === "INVALID_DESTINATION_BALANCE") {
+        showToast("El saldo de la cuenta de destino excede el valor permitido", "error");
+      } else {
+        showToast("No se pudo liquidar la alcancía", "error");
+      }
     } finally {
       setLoading(false);
     }
@@ -377,6 +516,14 @@ const Cuentas = ({ isOpen, onClose }) => {
                 <div className="form-group">
                   <label htmlFor="tasaEfectivaAnual">Tasa efectiva anual (%)</label>
                   <input id="tasaEfectivaAnual" name="tasaEfectivaAnual" type="text" inputMode="decimal" pattern="([0-9]+([.][0-9]{0,4})?|[.][0-9]{1,4})" required value={formValues.tasaEfectivaAnual} onChange={handleChange} placeholder="26.82" />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="cargoAvance">Valor del avance (cargo adicional)</label>
+                  <input id="cargoAvance" name="cargoAvance" type="text" inputMode="numeric" required value={formValues.cargoAvance} onChange={handleChange} placeholder="0" />
+                </div>
+                <div className="form-group">
+                  <label htmlFor="maximoCuotasAvance">Máximo de cuotas para avances</label>
+                  <input id="maximoCuotasAvance" name="maximoCuotasAvance" type="text" inputMode="numeric" pattern="[0-9]+" required value={formValues.maximoCuotasAvance} onChange={handleChange} placeholder="36" />
                 </div>
               </div>
             </>
@@ -490,6 +637,16 @@ const Cuentas = ({ isOpen, onClose }) => {
                       >
                         Editar
                       </button>
+                      {account.tipoCuenta === "ahorros" && (
+                        <button
+                          className="cuentas-liquidate"
+                          type="button"
+                          disabled={loading || Number(account.saldo || 0) <= 0}
+                          onClick={() => handleOpenLiquidation(account)}
+                        >
+                          Liquidar alcancía
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -498,6 +655,86 @@ const Cuentas = ({ isOpen, onClose }) => {
           )}
         </div>
       </div>
+      {liquidationAccountId && (
+        <div
+          className="cuentas-modal-overlay"
+          onClick={() => !loading && setLiquidationAccountId("")}
+        >
+          <form
+            className="cuentas-liquidation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="liquidation-title"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={handleLiquidateSavings}
+          >
+            <div className="cuentas-liquidation__header">
+              <div>
+                <h3 id="liquidation-title">Liquidar alcancía</h3>
+                <p>
+                  Se transferirá todo el saldo de{" "}
+                  <strong>{accounts.find((account) => account.id === liquidationAccountId)?.nombre}</strong>.
+                  Ingresa el total recibido, incluidos intereses o cargos.
+                </p>
+              </div>
+              <button
+                className="cuentas-liquidation__close"
+                type="button"
+                aria-label="Cerrar liquidación"
+                onClick={() => setLiquidationAccountId("")}
+                disabled={loading}
+              >
+                ×
+              </button>
+            </div>
+            <label className="form-group" htmlFor="liquidationDestination">
+              Cuenta de destino
+              <select
+                id="liquidationDestination"
+                required
+                value={liquidationDestinationId}
+                onChange={(event) => setLiquidationDestinationId(event.target.value)}
+              >
+                <option value="">Selecciona una cuenta</option>
+                {accounts
+                  .filter((account) => account.id !== liquidationAccountId && account.tipoCuenta !== "credito")
+                  .map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.banco} · {account.nombre}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="form-group" htmlFor="liquidationAmount">
+              Total recibido (incluye intereses)
+              <input
+                id="liquidationAmount"
+                required
+                type="text"
+                inputMode="numeric"
+                value={liquidationAmount}
+                onChange={(event) => {
+                  const digits = event.target.value.replace(/\D/g, "");
+                  setLiquidationAmount(digits.replace(/\B(?=(\d{3})+(?!\d))/g, "."));
+                }}
+              />
+            </label>
+            <div className="cuentas-liquidation__actions">
+              <button className="cuentas-submit" type="submit" disabled={loading || !liquidationDestinationId}>
+                Confirmar liquidación
+              </button>
+              <button
+                className="cuentas-liquidation__cancel"
+                type="button"
+                onClick={() => setLiquidationAccountId("")}
+                disabled={loading}
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

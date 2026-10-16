@@ -49,8 +49,14 @@ const formatMoney = (value) => {
  * tienen `establecimiento`, por eso la presencia de `descripcion` los
  * distingue como ingresos; si tienen `establecimiento` son egresos normales.
  */
-const isIngreso = (m) =>
-  m.descripcion && !m.establecimiento && m.tipo !== "pago_deuda" && m.tipo !== "transferencia";
+const isIngreso = (m, accountId) =>
+  (m.tipo === "transferencia" && m.cuentaDestinoId === accountId) ||
+  (m.descripcion && !m.establecimiento && m.tipo !== "pago_deuda" && m.tipo !== "transferencia");
+
+const getMovementAmount = (movement, accountId) =>
+  movement.tipo === "transferencia" && movement.cuentaDestinoId === accountId
+    ? Number(movement.valorDestino ?? movement.valor)
+    : Number(movement.valor);
 
 const isPagoDeuda = (m) => m.tipo === "pago_deuda";
 
@@ -150,12 +156,15 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         const snapById = await getDocs(
           query(
             collection(db, "movimientos"),
-            where("userId", "==", user.uid),
-            where("cuentaId", "==", selectedCuentaId)
+            where("userId", "==", user.uid)
           )
         );
         const docsById = snapById.docs
           .map((d) => ({ id: d.id, ...d.data(), _source: "userId" }))
+          .filter((movement) => (
+            movement.cuentaId === selectedCuentaId ||
+            movement.cuentaDestinoId === selectedCuentaId
+          ))
           .sort(
             (a, b) =>
               (b.fechaCreacion?.toMillis?.() ?? 0) -
@@ -167,12 +176,15 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         const snapByUsuarioId = await getDocs(
           query(
             collection(db, "movimientos"),
-            where("usuarioId", "==", user.uid),
-            where("cuentaId", "==", selectedCuentaId)
+            where("usuarioId", "==", user.uid)
           )
         );
         const docsByUsuarioId = snapByUsuarioId.docs
           .map((d) => ({ id: d.id, ...d.data(), _source: "usuarioId" }))
+          .filter((movement) => (
+            movement.cuentaId === selectedCuentaId ||
+            movement.cuentaDestinoId === selectedCuentaId
+          ))
           .sort(
             (a, b) =>
               (b.fechaCreacion?.toMillis?.() ?? 0) -
@@ -271,8 +283,8 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       (m) =>
         isWithinPeriod(m, filterPeriod) &&
         (filterType === "todos" ||
-          (filterType === "ingreso" && isIngreso(m)) ||
-          (filterType === "egreso" && !isIngreso(m) && !isPagoDeuda(m)) ||
+          (filterType === "ingreso" && isIngreso(m, selectedCuentaId)) ||
+          (filterType === "egreso" && !isIngreso(m, selectedCuentaId) && !isPagoDeuda(m)) ||
           (filterType === "deuda" && isPagoDeuda(m))) &&
         (selectedTags.length === 0 || (m.tags || []).some((tag) =>
           selectedTags.some(
@@ -284,7 +296,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
           String(m.establecimiento || m.descripcion || "").trim()
         ))
     );
-  }, [allMovements, filterPeriod, filterType, selectedTags, selectedConcepts]);
+  }, [allMovements, filterPeriod, filterType, selectedTags, selectedConcepts, selectedCuentaId]);
 
   /* ── Paginación ── */
   const totalPages = Math.ceil(filteredMovements.length / itemsPerPage);
@@ -304,11 +316,11 @@ const VerMovimientos = ({ isOpen, onClose }) => {
   const cuentaActual = accounts.find((c) => c.id === selectedCuentaId);
 
   const totalEgresos = filteredMovements.reduce(
-    (acc, m) => acc + (!isIngreso(m) ? getNumber(m.valor) : 0),
+    (acc, m) => acc + (!isIngreso(m, selectedCuentaId) ? getMovementAmount(m, selectedCuentaId) : 0),
     0
   );
   const totalIngresos = filteredMovements.reduce(
-    (acc, m) => acc + (isIngreso(m) ? getNumber(m.valor) : 0),
+    (acc, m) => acc + (isIngreso(m, selectedCuentaId) ? getMovementAmount(m, selectedCuentaId) : 0),
     0
   );
   const cantMovimientos = filteredMovements.length;
@@ -317,7 +329,9 @@ const VerMovimientos = ({ isOpen, onClose }) => {
     0
   );
   const totalTagGastado = filteredMovements.reduce(
-    (acc, movimiento) => acc + (!isIngreso(movimiento) ? getNumber(movimiento.valor) : 0),
+    (acc, movimiento) => acc + (!isIngreso(movimiento, selectedCuentaId)
+      ? getMovementAmount(movimiento, selectedCuentaId)
+      : 0),
     0
   );
   const movementDates = filteredMovements
@@ -331,15 +345,24 @@ const VerMovimientos = ({ isOpen, onClose }) => {
   const handleDeleteMovimiento = async (movimiento) => {
     const isCardPayment = movimiento.tipo === "pago_tarjeta";
     const isCreditPurchase = movimiento.tipo === "credito_compra";
+    const isCreditAdvance = movimiento.tipo === "credito_avance";
     const isTransfer = movimiento.tipo === "transferencia" || isCardPayment;
+    const isSavingsLiquidation = movimiento.origen === "liquidacion_alcancia";
+    const isIncomeMovement = isIngreso(movimiento, selectedCuentaId);
     const isExternalTransfer = isTransfer && movimiento.tipoTransferencia === "externa";
     const confirmDelete = window.confirm(
       isExternalTransfer
         ? `¿Eliminar el envío a ${movimiento.destinatarioNombre}? Se devolverán $${formatMoney(movimiento.valor)} al origen.`
         : isCardPayment
         ? `¿Eliminar este abono? Se devolverán $${formatMoney(movimiento.valor)} al origen y la deuda de la tarjeta aumentará.`
+        : isSavingsLiquidation
+        ? `¿Revertir esta liquidación? Se devolverán $${formatMoney(movimiento.valor)} a la alcancía y se descontarán $${formatMoney(movimiento.valorDestino)} del destino.`
         : isTransfer
         ? `¿Eliminar esta transferencia? Se devolverán $${formatMoney(movimiento.valor)} al origen y se descontarán del destino.`
+        : isIncomeMovement
+        ? `¿Eliminar este ingreso? Se descontarán $${formatMoney(movimiento.valor)} de la cuenta.`
+        : isCreditAdvance
+        ? `¿Eliminar este avance? Se devolverán $${formatMoney(movimiento.valor)} al cupo de la tarjeta.`
         : `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
     );
     if (!confirmDelete) return;
@@ -353,7 +376,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         return;
       }
 
-      if (isCreditPurchase) {
+      if (isCreditPurchase || isCreditAdvance) {
         const accountRef = doc(db, "cuentas", movimiento.cuentaId);
         let availableAfter = 0;
         let debtAfter = 0;
@@ -381,7 +404,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         } else {
           setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
         }
-        showToast("Compra con tarjeta revertida", "success");
+        showToast(isCreditAdvance ? "Avance de tarjeta revertido" : "Compra con tarjeta revertida", "success");
         return;
       }
 
@@ -423,8 +446,9 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                 ultimaActualizacion: new Date(),
               });
             } else {
-              if (destinationBalance < value) throw new Error("SALDO_DESTINO_INSUFICIENTE");
-              destinationBalanceAfter = destinationBalance - value;
+              const destinationValue = Number(movimiento.valorDestino ?? value);
+              if (destinationBalance < destinationValue) throw new Error("SALDO_DESTINO_INSUFICIENTE");
+              destinationBalanceAfter = destinationBalance - destinationValue;
               transaction.update(destinationRef, {
                 saldo: destinationBalanceAfter,
                 ultimaActualizacion: new Date(),
@@ -447,6 +471,38 @@ const VerMovimientos = ({ isOpen, onClose }) => {
           setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
         }
         showToast(isCardPayment ? "Abono revertido; la deuda de la tarjeta fue restaurada" : "Transferencia revertida correctamente", "success");
+        return;
+      }
+
+      if (isIncomeMovement) {
+        const accountRef = doc(db, "cuentas", movimiento.cuentaId || selectedCuentaId);
+        let balanceAfter = 0;
+        await runTransaction(db, async (transaction) => {
+          const accountSnapshot = await transaction.get(accountRef);
+          if (!accountSnapshot.exists()) throw new Error("CUENTA_NO_ENCONTRADA");
+          const accountData = accountSnapshot.data();
+          const balance = Number(accountData.saldo || 0);
+          const value = getMovementAmount(movimiento, selectedCuentaId);
+          if (balance < value) throw new Error("SALDO_INGRESO_INSUFICIENTE");
+          balanceAfter = balance - value;
+          transaction.update(accountRef, {
+            saldo: balanceAfter,
+            ultimaActualizacion: new Date(),
+          });
+          transaction.delete(doc(db, "movimientos", movimiento.id));
+        });
+
+        setAccounts((previous) => previous.map((account) =>
+          account.id === (movimiento.cuentaId || selectedCuentaId)
+            ? { ...account, saldo: balanceAfter }
+            : account
+        ));
+        if (movimiento._source === "userId") {
+          setMovementsById((previous) => previous.filter((item) => item.id !== movimiento.id));
+        } else {
+          setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
+        }
+        showToast("Ingreso eliminado y saldo descontado correctamente", "success");
         return;
       }
 
@@ -484,6 +540,8 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       showToast(
         error.message === "SALDO_DESTINO_INSUFICIENTE"
           ? "No se puede revertir: el destino ya no tiene ese saldo disponible"
+          : error.message === "SALDO_INGRESO_INSUFICIENTE"
+          ? "No se puede eliminar: la cuenta no tiene saldo suficiente para revertir el ingreso"
           : "No se pudo eliminar el movimiento",
         "error"
       );
@@ -703,13 +761,13 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                     <tr key={`${m._source}-${m.id}`}>
                       <td>{formatDateTime(m.fechaHora)}</td>
                       <td>
-                        {isIngreso(m) ? (
+                        {isIngreso(m, selectedCuentaId) ? (
                           <span className="ver-valor ver-valor--ingreso">
-                            +${formatMoney(m.valor)}
+                            +${formatMoney(getMovementAmount(m, selectedCuentaId))}
                           </span>
                         ) : (
                           <span className="ver-valor ver-valor--egreso">
-                            −${formatMoney(m.valor)}
+                            −${formatMoney(getMovementAmount(m, selectedCuentaId))}
                           </span>
                         )}
                       </td>
@@ -725,13 +783,19 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                           <span className="ver-tag-badge ver-tag-badge--deuda">
                             Pago deuda
                           </span>
-                        ) : isIngreso(m) ? (
+                        ) : isIngreso(m, selectedCuentaId) ? (
                           <span className="ver-tag-badge ver-tag-badge--ingreso">
                             Ingreso
                           </span>
                         ) : (
                           <span className="ver-tag-badge ver-tag-badge--egreso">
-                            {m.tipo === "transferencia" ? "Transferencia" : "Egreso"}
+                            {m.tipo === "transferencia"
+                              ? "Transferencia"
+                              : m.tipo === "credito_avance"
+                              ? `Avance${m.cuotas ? ` · ${m.cuotas} cuotas` : ""}`
+                              : m.tipo === "credito_compra"
+                              ? "Compra tarjeta"
+                              : "Egreso"}
                           </span>
                         )}
                       </td>

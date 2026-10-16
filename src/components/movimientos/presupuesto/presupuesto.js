@@ -551,9 +551,15 @@ const Presupuesto = ({ isOpen, onClose }) => {
     setBudgetNoteText(budget.nota || "");
   };
 
+  const closeBudgetNoteModal = () => {
+    setEditingBudgetId(null);
+    setBudgetNoteText("");
+  };
+
   const handleSaveBudgetNote = async () => {
     if (!editingBudgetId) return;
 
+    setLoading(true);
     try {
       await updateDoc(doc(db, "presupuestos", editingBudgetId), {
         nota: budgetNoteText.trim(),
@@ -567,11 +573,12 @@ const Presupuesto = ({ isOpen, onClose }) => {
       );
 
       showToast("Nota del presupuesto actualizada", "success");
-      setEditingBudgetId(null);
-      setBudgetNoteText("");
+      closeBudgetNoteModal();
     } catch (error) {
       console.error("Error actualizando la nota del presupuesto:", error);
       showToast("No se pudo actualizar la nota", "error");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -965,25 +972,6 @@ const Presupuesto = ({ isOpen, onClose }) => {
                         </button>
                       </div>
 
-                      {editingBudgetId === budget.id && (
-                        <div className="presupuesto-note-editor">
-                          <textarea
-                            className="presupuesto-input presupuesto-input--textarea"
-                            value={budgetNoteText}
-                            onChange={(event) => setBudgetNoteText(event.target.value)}
-                            placeholder="Escribe lo que quieres comprar o ahorrar para este periodo"
-                          />
-                          <div className="presupuesto-note-editor__actions">
-                            <button type="button" className="presupuesto-submit" onClick={handleSaveBudgetNote}>
-                              Guardar nota
-                            </button>
-                            <button type="button" className="presupuesto-cancel" onClick={() => { setEditingBudgetId(null); setBudgetNoteText(""); }}>
-                              Cancelar
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
                       <div className="presupuesto-budget__movements">
                         <span className="presupuesto-budget__movements-title">Movimientos en este presupuesto</span>
                         {budgetMovements.length === 0 ? (
@@ -1006,6 +994,54 @@ const Presupuesto = ({ isOpen, onClose }) => {
             </div>
           </section>
         </div>
+        {editingBudgetId && (
+          <div
+            className="presupuesto-modal-overlay"
+            onClick={() => !loading && closeBudgetNoteModal()}
+          >
+            <section
+              className="presupuesto-note-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="presupuesto-note-modal-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="presupuesto-note-modal__header">
+                <div>
+                  <h3 id="presupuesto-note-modal-title">Editar nota del presupuesto</h3>
+                  <p>{budgets.find((budget) => budget.id === editingBudgetId)?.establecimiento || "Presupuesto"}</p>
+                </div>
+                <button
+                  className="presupuesto-note-modal__close"
+                  type="button"
+                  aria-label="Cerrar"
+                  onClick={closeBudgetNoteModal}
+                  disabled={loading}
+                >
+                  ×
+                </button>
+              </header>
+              <label className="presupuesto-field" htmlFor="budget-note-editor">
+                Nota
+                <textarea
+                  id="budget-note-editor"
+                  className="presupuesto-input presupuesto-input--textarea"
+                  value={budgetNoteText}
+                  onChange={(event) => setBudgetNoteText(event.target.value)}
+                  placeholder="Escribe lo que quieres comprar o ahorrar para este periodo"
+                />
+              </label>
+              <div className="presupuesto-note-editor__actions">
+                <button type="button" className="presupuesto-submit" onClick={handleSaveBudgetNote} disabled={loading}>
+                  Guardar nota
+                </button>
+                <button type="button" className="presupuesto-cancel" onClick={closeBudgetNoteModal} disabled={loading}>
+                  Cancelar
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </div>
   );
