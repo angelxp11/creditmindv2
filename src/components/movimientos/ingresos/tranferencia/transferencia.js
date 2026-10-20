@@ -3,6 +3,7 @@ import { auth, db } from "../../../../server/api";
 import {
 	collection,
 	doc,
+	getDocs,
 	onSnapshot,
 	query,
 	runTransaction,
@@ -108,6 +109,15 @@ const Transferencia = ({ isOpen, onClose }) => {
 			const sourceRef = doc(db, "cuentas", source.id);
 			const destinationRef = destination ? doc(db, "cuentas", destination.id) : null;
 			const movementRef = doc(collection(db, "movimientos"));
+			const statementObligations = isCreditCardPayment
+				? (await getDocs(query(
+					collection(db, "obligaciones"),
+					where("usuarioId", "==", user.uid),
+					where("tarjetaId", "==", destination.id),
+					where("tipo", "==", "pago_tarjeta")
+				))).docs
+				.map((obligationDoc) => ({ id: obligationDoc.id, ref: obligationDoc.ref }))
+				: [];
 
 			await runTransaction(db, async (transaction) => {
 				const sourceSnapshot = await transaction.get(sourceRef);
@@ -117,6 +127,7 @@ const Transferencia = ({ isOpen, onClose }) => {
 				if (!sourceSnapshot.exists() || (destinationSnapshot && !destinationSnapshot.exists())) {
 					throw new Error("CUENTA_NO_ENCONTRADA");
 				}
+				const obligationSnapshots = await Promise.all(statementObligations.map(({ ref }) => transaction.get(ref)));
 
 				const sourceData = sourceSnapshot.data();
 				const destinationData = destinationSnapshot?.data();
@@ -142,6 +153,39 @@ const Transferencia = ({ isOpen, onClose }) => {
 						});
 					}
 				}
+				const obligationAbonos = [];
+				if (isCreditCardPayment) {
+					let unappliedPayment = valor;
+					const currentStatements = obligationSnapshots
+						.map((snapshot, index) => ({
+							snapshot,
+							...statementObligations[index],
+						}))
+						.filter(({ snapshot }) => snapshot.exists() && snapshot.data().activa)
+						.sort((first, second) =>
+							String(first.snapshot.data().fechaProximoPago)
+								.localeCompare(String(second.snapshot.data().fechaProximoPago))
+						);
+					currentStatements.forEach(({ snapshot, id, ref }) => {
+						const statement = snapshot.data();
+						if (statement.usuarioId !== user.uid || statement.tarjetaId !== destination.id ||
+							unappliedPayment <= 0) return;
+						const currentAmount = Number(statement.montoPendiente ?? statement.valor ?? 0);
+						const amountApplied = Math.min(currentAmount, unappliedPayment);
+						if (amountApplied <= 0) return;
+						const remaining = currentAmount - amountApplied;
+						const paid = remaining <= 0;
+						transaction.update(ref, {
+							montoPendiente: remaining,
+							activa: !paid,
+							fechaUltimoPago: serverTimestamp(),
+							...(paid ? { fechaUltimoPeriodoPagado: statement.fechaCorte } : {}),
+							ultimaActualizacion: serverTimestamp(),
+						});
+						obligationAbonos.push({ obligacionId: id, valor: amountApplied });
+						unappliedPayment -= amountApplied;
+					});
+				}
 				transaction.set(movementRef, {
 					userId: user.uid,
 					usuarioId: user.uid,
@@ -158,6 +202,7 @@ const Transferencia = ({ isOpen, onClose }) => {
 					}),
 					tipo: isCreditCardPayment ? "pago_tarjeta" : "transferencia",
 					valor,
+					...(obligationAbonos.length > 0 ? { obligacionAbonos: obligationAbonos } : {}),
 					descripcion: descripcion.toUpperCase() || (isCreditCardPayment ? "ABONO TARJETA DE CREDITO" : "TRANSFERENCIA"),
 					fechaHora: new Date(),
 					fechaCreacion: serverTimestamp(),

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { addDoc, collection, deleteDoc, doc, getDocs, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
+import { addDoc, collection, deleteField, deleteDoc, doc, getDocs, query, runTransaction, serverTimestamp, updateDoc, where, writeBatch } from "firebase/firestore";
 import { auth, db } from "../../../server/api";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
@@ -311,16 +311,40 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	};
 
 	const toggleActive = async (obligation) => {
+		const user = auth.currentUser;
+		if (!user) {
+			showToast("Necesitas iniciar sesión", "error");
+			return;
+		}
 		setLoading(true);
 		try {
-			await updateDoc(doc(db, "obligaciones", obligation.id), { activa: !obligation.activa });
+			const obligationRef = doc(db, "obligaciones", obligation.id);
+			const active = await runTransaction(db, async (transaction) => {
+				const obligationSnapshot = await transaction.get(obligationRef);
+				if (!obligationSnapshot.exists() || obligationSnapshot.data().usuarioId !== user.uid) {
+					throw new Error("OBLIGATION_UNAVAILABLE");
+				}
+				const currentObligation = obligationSnapshot.data();
+				const nextActive = !currentObligation.activa;
+				if (nextActive && currentObligation.deudaId) {
+					const debtSnapshot = await transaction.get(doc(db, "deudas", currentObligation.deudaId));
+					if (!debtSnapshot.exists() || debtSnapshot.data().usuarioId !== user.uid ||
+						Number(debtSnapshot.data().montoRestante ?? debtSnapshot.data().monto ?? 0) <= 0) {
+						throw new Error("DEBT_ALREADY_PAID");
+					}
+				}
+				transaction.update(obligationRef, { activa: nextActive });
+				return nextActive;
+			});
 			setObligations((current) => current.map((item) => item.id === obligation.id
-				? { ...item, activa: !item.activa }
+				? { ...item, activa: active }
 				: item));
-			showToast(obligation.activa ? "Obligación pausada" : "Obligación reactivada", "success");
+			showToast(active ? "Obligación reactivada" : "Obligación pausada", "success");
 		} catch (error) {
 			console.error("Error actualizando obligación:", error);
-			showToast("No se pudo actualizar la obligación", "error");
+			showToast(error.message === "DEBT_ALREADY_PAID"
+				? "No puedes reactivar una obligación cuya deuda ya está saldada"
+				: "No se pudo actualizar la obligación", error.message === "DEBT_ALREADY_PAID" ? "info" : "error");
 		} finally {
 			setLoading(false);
 		}
@@ -331,7 +355,15 @@ const Obligaciones = ({ isOpen, onClose }) => {
 
 		setLoading(true);
 		try {
-			await deleteDoc(doc(db, "obligaciones", obligation.id));
+			const batch = writeBatch(db);
+			batch.delete(doc(db, "obligaciones", obligation.id));
+			if (obligation.deudaId) {
+				batch.update(doc(db, "deudas", obligation.deudaId), {
+					obligacionId: deleteField(),
+					ultimaActualizacion: serverTimestamp(),
+				});
+			}
+			await batch.commit();
 			setObligations((current) => current.filter((item) => item.id !== obligation.id));
 			showToast("Obligación eliminada", "success");
 		} catch (error) {
@@ -510,21 +542,38 @@ const Obligaciones = ({ isOpen, onClose }) => {
 								<article className={`obligacion-row${obligation.activa ? "" : " obligacion-row--paused"}`} key={obligation.id}>
 									<div className="obligacion-row__details">
 										<strong>{obligation.nombre}</strong>
-										<span>${Number(obligation.valor || 0).toLocaleString("es-CO")} · {formatObligationSchedule(obligation)} · {obligation.cuentaNombre}</span>
+										<span>
+											${Number(obligation.tipo === "pago_tarjeta"
+												? obligation.montoPendiente ?? obligation.valor ?? 0
+												: obligation.valor || 0).toLocaleString("es-CO")}
+											{obligation.deudaId
+												? ` por pago · Saldo de deuda: $${Number(obligation.deudaRestante || 0).toLocaleString("es-CO")}`
+												: obligation.tipo === "pago_tarjeta"
+													? ` pendiente del extracto · Corte ${formatObligationDate(obligation.fechaCorte)}`
+													: ""}
+											{" · "}{formatObligationSchedule(obligation)} · {obligation.cuentaNombre}
+										</span>
 										{obligation.fechaUltimoPeriodoPagado && (
 											<span>Periodo cubierto: {formatObligationDate(obligation.fechaUltimoPeriodoPagado)}</span>
 										)}
-										<span>{obligation.activa ? "Próximo vencimiento" : "Pausada"}: {formatObligationDate(obligation.fechaProximoPago)}</span>
+										<span>
+											{obligation.deudaPagada ? "Deuda saldada" : obligation.activa ? "Próximo vencimiento" : obligation.tipo === "pago_tarjeta" ? "Extracto pagado" : "Pausada"}
+											{!obligation.deudaPagada && `: ${formatObligationDate(obligation.fechaProximoPago)}`}
+										</span>
 									</div>
-									<button type="button" onClick={() => toggleActive(obligation)} disabled={loading}>
-										{obligation.activa ? "Pausar" : "Reactivar"}
-									</button>
-									<button type="button" onClick={() => editObligation(obligation)} disabled={loading}>
-										Editar
-									</button>
-									<button className="obligacion-row__delete" type="button" onClick={() => deleteObligation(obligation)} disabled={loading}>
-										Eliminar
-									</button>
+									{obligation.tipo !== "pago_tarjeta" && (
+										<>
+											<button type="button" onClick={() => toggleActive(obligation)} disabled={loading || obligation.deudaPagada}>
+												{obligation.deudaPagada ? "Saldada" : obligation.activa ? "Pausar" : "Reactivar"}
+											</button>
+											<button type="button" onClick={() => editObligation(obligation)} disabled={loading}>
+												Editar
+											</button>
+											<button className="obligacion-row__delete" type="button" onClick={() => deleteObligation(obligation)} disabled={loading}>
+												Eliminar
+											</button>
+										</>
+									)}
 								</article>
 							))}
 						</section>

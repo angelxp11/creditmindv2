@@ -378,11 +378,17 @@ const VerMovimientos = ({ isOpen, onClose }) => {
 
       if (isCreditPurchase || isCreditAdvance) {
         const accountRef = doc(db, "cuentas", movimiento.cuentaId);
+        const obligationRef = (isCreditPurchase || isCreditAdvance) && movimiento.obligacionId
+          ? doc(db, "obligaciones", movimiento.obligacionId)
+          : null;
         let availableAfter = 0;
         let debtAfter = 0;
         await runTransaction(db, async (transaction) => {
           const accountSnapshot = await transaction.get(accountRef);
           if (!accountSnapshot.exists()) throw new Error("CUENTA_NO_ENCONTRADA");
+          const obligationSnapshot = obligationRef
+            ? await transaction.get(obligationRef)
+            : null;
           const accountData = accountSnapshot.data();
           const value = Number(movimiento.valor);
           const creditChanges = applyCreditPayment(accountData, value);
@@ -393,6 +399,21 @@ const VerMovimientos = ({ isOpen, onClose }) => {
             deudaActual: debtAfter,
             ultimaActualizacion: new Date(),
           });
+          if (obligationSnapshot?.exists()) {
+            const statement = obligationSnapshot.data();
+            const statementTotal = Math.max(0, Number(statement.valor || 0) - value);
+            const statementRemaining = Math.max(
+              0,
+              Number(statement.montoPendiente ?? statement.valor ?? 0) - value
+            );
+            transaction.update(obligationRef, {
+              valor: statementTotal,
+              montoPendiente: statementRemaining,
+              activa: statementRemaining > 0,
+              anulada: statementTotal <= 0,
+              ultimaActualizacion: new Date(),
+            });
+          }
           transaction.delete(doc(db, "movimientos", movimiento.id));
         });
 
@@ -416,12 +437,25 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         let sourceBalanceAfter = 0;
         let destinationBalanceAfter = 0;
         let destinationDebtAfter = null;
+        const obligationAbonos = Array.isArray(movimiento.obligacionAbonos)
+          ? movimiento.obligacionAbonos.filter((item) =>
+            item?.obligacionId && Number(item.valor) > 0
+          )
+          : [];
+        const obligationRefs = obligationAbonos.map((item) => ({
+          id: item.obligacionId,
+          ref: doc(db, "obligaciones", item.obligacionId),
+          amount: Number(item.valor),
+        }));
 
         await runTransaction(db, async (transaction) => {
           const sourceSnapshot = await transaction.get(sourceRef);
           const destinationSnapshot = destinationRef
             ? await transaction.get(destinationRef)
             : null;
+          const obligationSnapshots = await Promise.all(
+            obligationRefs.map(({ ref }) => transaction.get(ref))
+          );
           if (!sourceSnapshot.exists() || (destinationSnapshot && !destinationSnapshot.exists())) {
             throw new Error("CUENTA_NO_ENCONTRADA");
           }
@@ -455,6 +489,20 @@ const VerMovimientos = ({ isOpen, onClose }) => {
               });
             }
           }
+          obligationSnapshots.forEach((snapshot, index) => {
+            if (!snapshot.exists()) return;
+            const statement = snapshot.data();
+            if (statement.usuarioId !== (movimiento.usuarioId || movimiento.userId) ||
+              statement.tarjetaId !== movimiento.cuentaDestinoId) return;
+            const amount = obligationRefs[index].amount;
+            const remaining = Number(statement.montoPendiente ?? statement.valor ?? 0) + amount;
+            transaction.update(obligationRefs[index].ref, {
+              montoPendiente: remaining,
+              activa: remaining > 0,
+              anulada: false,
+              ultimaActualizacion: new Date(),
+            });
+          });
           transaction.delete(doc(db, "movimientos", movimiento.id));
         });
 

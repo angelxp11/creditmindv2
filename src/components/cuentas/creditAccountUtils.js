@@ -32,6 +32,59 @@ export const getCreditStatementDates = (account, referenceDate = new Date()) => 
   return cycles.sort((first, second) => first.paymentDate - second.paymentDate)[0] || null;
 };
 
+export const getCreditStatementForPurchase = (account, purchaseDate = new Date()) => {
+  const cutoffDay = Number(account?.fechaCorte);
+  const paymentDay = Number(account?.fechaLimitePago);
+  if (
+    !Number.isInteger(cutoffDay) || cutoffDay < 1 || cutoffDay > 31 ||
+    !Number.isInteger(paymentDay) || paymentDay < 1 || paymentDay > 31 ||
+    !(purchaseDate instanceof Date) || Number.isNaN(purchaseDate.getTime())
+  ) {
+    return null;
+  }
+
+  const purchaseDay = new Date(
+    purchaseDate.getFullYear(),
+    purchaseDate.getMonth(),
+    purchaseDate.getDate()
+  );
+  const cutoffDate = getClampedMonthDate(
+    purchaseDay.getFullYear(),
+    purchaseDay.getMonth(),
+    cutoffDay
+  );
+  if (purchaseDay > cutoffDate) {
+    const nextMonth = new Date(cutoffDate.getFullYear(), cutoffDate.getMonth() + 1, 1);
+    cutoffDate.setTime(getClampedMonthDate(
+      nextMonth.getFullYear(),
+      nextMonth.getMonth(),
+      cutoffDay
+    ).getTime());
+  }
+
+  const paymentMonthOffset = paymentDay <= cutoffDay ? 1 : 0;
+  const paymentMonth = new Date(
+    cutoffDate.getFullYear(),
+    cutoffDate.getMonth() + paymentMonthOffset,
+    1
+  );
+  const paymentDate = getClampedMonthDate(
+    paymentMonth.getFullYear(),
+    paymentMonth.getMonth(),
+    paymentDay
+  );
+  const previousCutoffMonth = new Date(cutoffDate.getFullYear(), cutoffDate.getMonth() - 1, 1);
+  const previousCutoffDate = getClampedMonthDate(
+    previousCutoffMonth.getFullYear(),
+    previousCutoffMonth.getMonth(),
+    cutoffDay
+  );
+  const startDate = new Date(previousCutoffDate);
+  startDate.setDate(startDate.getDate() + 1);
+
+  return { startDate, cutoffDate, paymentDate };
+};
+
 export const applyCreditPurchase = (account, amount) => {
   if (account?.tipoCuenta !== "credito") {
     throw new Error("NOT_A_CREDIT_ACCOUNT");

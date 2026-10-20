@@ -588,6 +588,12 @@
   font-size: 1.1rem;
 }
 
+.home-obligations__description {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .home-obligations__count {
   display: inline-flex;
   min-width: 26px;
@@ -606,6 +612,18 @@
   gap: 8px;
 }
 
+.home-obligations__paid {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+
+.home-obligations__paid h3 {
+  margin: 0 0 9px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
 .home-obligation {
   display: flex;
   align-items: center;
@@ -615,6 +633,16 @@
   border: 1px solid var(--border-color);
   border-radius: 10px;
   background: var(--bg-secondary);
+}
+
+.home-obligation--paid {
+  opacity: 0.72;
+}
+
+.home-obligation__paid-status {
+  flex-shrink: 0;
+  color: var(--success);
+  font-size: 0.82rem;
 }
 
 .home-obligation__details {
@@ -638,4 +666,16 @@
   flex-shrink: 0;
   color: #f59e0b;
   font-size: 0.9rem;
+}
+
+.home-obligation__totals {
+  display: grid;
+  flex-shrink: 0;
+  gap: 4px;
+  text-align: right;
+}
+
+.home-obligation__remaining {
+  color: var(--text-muted);
+  font-size: 0.74rem;
 }

@@ -14,9 +14,9 @@ import {
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
-import { formatObligationDate, formatObligationSchedule, getNextDueDate } from "./obligaciones/obligationUtils";
+import { formatObligationDate, formatObligationSchedule, getLocalDateString, getNextDueDate } from "./obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
-import { applyCreditAdvance, applyCreditPurchase, getCreditStatementDates } from "../cuentas/creditAccountUtils";
+import { applyCreditAdvance, applyCreditPayment, applyCreditPurchase, getCreditStatementDates, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
 import "./movimientos.css";
 
 const initialForm = {
@@ -27,6 +27,24 @@ const initialForm = {
 
 const initialBudget = {
   fechaProgramada: "",
+};
+
+const getObligationMonth = (date) => {
+  if (typeof date === "string") return date.slice(0, 7);
+  const parsedDate = typeof date?.toDate === "function"
+    ? date.toDate()
+    : date instanceof Date
+      ? date
+      : null;
+  return parsedDate && !Number.isNaN(parsedDate.getTime())
+    ? getLocalDateString(parsedDate).slice(0, 7)
+    : "";
+};
+
+const wasObligationPaidThisMonth = (obligation, month) => {
+  if (obligation.tipo === "pago_tarjeta" && obligation.activa) return false;
+  return (getObligationMonth(obligation.fechaUltimoPago) ||
+    getObligationMonth(obligation.fechaUltimoPeriodoPagado)) === month;
 };
 
 const normalizeTags = (list = []) => {
@@ -71,6 +89,7 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [budgets, setBudgets] = useState([]);
   const [obligations, setObligations] = useState([]);
   const [obligationPaymentAmounts, setObligationPaymentAmounts] = useState({});
+  const [obligationPaymentAccounts, setObligationPaymentAccounts] = useState({});
   const [recurringIncomes, setRecurringIncomes] = useState([]);
   const [recurringIncomeAmounts, setRecurringIncomeAmounts] = useState({});
 
@@ -122,15 +141,30 @@ const Movimientos = ({ isOpen, onClose }) => {
         const recurringIncomesSnapshot = await getDocs(
           query(collection(db, "ingresosRecurrentes"), where("usuarioId", "==", user.uid))
         );
-        const activeObligations = obligationsSnapshot.docs
+        const currentMonth = getLocalDateString().slice(0, 7);
+        const currentObligations = obligationsSnapshot.docs
           .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
-          .filter((obligation) => obligation.activa)
+          .filter((obligation) =>
+            !obligation.anulada && (obligation.activa ||
+              wasObligationPaidThisMonth(obligation, currentMonth))
+          )
           .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)));
-        setObligations(activeObligations);
+        setObligations(currentObligations);
+        const defaultFundingAccount = spendableAccounts.find((account) => account.esDefault) || spendableAccounts[0];
+        setObligationPaymentAccounts(Object.fromEntries(
+          currentObligations
+            .filter((obligation) => obligation.tipo === "pago_tarjeta")
+            .map((obligation) => [obligation.id, defaultFundingAccount?.id || ""])
+        ));
         setObligationPaymentAmounts(Object.fromEntries(
-          activeObligations.map((obligation) => [
+          currentObligations.map((obligation) => [
             obligation.id,
-            formatMoneyInput(String(Number(obligation.valor || 0))),
+            formatMoneyInput(String(obligation.tipo === "pago_tarjeta"
+              ? Number(obligation.montoPendiente ?? obligation.valor ?? 0)
+              : Math.min(
+                Number(obligation.valor || 0),
+                Number(obligation.deudaRestante ?? obligation.valor ?? 0)
+              ))),
           ])
         ));
         const activeRecurringIncomes = recurringIncomesSnapshot.docs
@@ -175,6 +209,7 @@ const Movimientos = ({ isOpen, onClose }) => {
       setBudgets([]);
       setObligations([]);
       setObligationPaymentAmounts({});
+      setObligationPaymentAccounts({});
       setRecurringIncomes([]);
       setRecurringIncomeAmounts({});
       fetchAccounts();
@@ -192,6 +227,18 @@ const Movimientos = ({ isOpen, onClose }) => {
     const abs = String(Math.abs(num)).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
     return num < 0 ? `-${abs}` : abs;
   };
+
+  const currentMonth = getLocalDateString().slice(0, 7);
+  const paidObligationsThisMonth = obligations.filter((obligation) =>
+    !obligation.anulada && wasObligationPaidThisMonth(obligation, currentMonth)
+  );
+  const pendingObligations = obligations.filter((obligation) => {
+    if (!obligation.activa || obligation.anulada) return false;
+    if (obligation.tipo === "pago_tarjeta") return true;
+    const paidThisMonth = wasObligationPaidThisMonth(obligation, currentMonth);
+    const nextDueMonth = getObligationMonth(obligation.fechaProximoPago);
+    return !paidThisMonth || nextDueMonth <= currentMonth;
+  });
 
   /* ── Función para obtener sugerencias ── */
   const obtenerSugerencia = (establecimiento, valor) => {
@@ -306,7 +353,7 @@ const Movimientos = ({ isOpen, onClose }) => {
 
   const changeMode = (nextMode) => {
     setMode(nextMode);
-    if (nextMode !== "pago") {
+    if (nextMode !== mode) {
       setUsePreviousDate(false);
     }
     if (nextMode === "avance") {
@@ -414,6 +461,11 @@ const Movimientos = ({ isOpen, onClose }) => {
   };
 
   const handlePayObligation = async (obligation, amount) => {
+    if (obligation.tipo === "pago_tarjeta") {
+      await handlePayCreditObligation(obligation, amount);
+      return;
+    }
+
     const user = auth.currentUser;
     if (!user) {
       showToast("Necesitas iniciar sesión", "error");
@@ -440,10 +492,14 @@ const Movimientos = ({ isOpen, onClose }) => {
         if (currentObligation.usuarioId !== user.uid) {
           throw new Error("OBLIGATION_UNAVAILABLE");
         }
+        const debtRef = currentObligation.deudaId
+          ? doc(db, "deudas", currentObligation.deudaId)
+          : null;
         const accountSnapshot = await transaction.get(accountRef);
         if (!accountSnapshot.exists()) {
           throw new Error("ACCOUNT_UNAVAILABLE");
         }
+        const debtSnapshot = debtRef ? await transaction.get(debtRef) : null;
 
         const account = accountSnapshot.data();
         const balance = Number(account.saldo || 0);
@@ -454,7 +510,22 @@ const Movimientos = ({ isOpen, onClose }) => {
           throw new Error("INSUFFICIENT_BALANCE");
         }
 
-        const nextDueDate = getNextDueDate(
+        let remainingDebt = null;
+        let debtPaid = false;
+        if (debtRef) {
+          if (!debtSnapshot?.exists()) throw new Error("DEBT_UNAVAILABLE");
+          const debt = debtSnapshot.data();
+          if (debt.usuarioId !== user.uid || debt.obligacionId !== obligation.id) {
+            throw new Error("DEBT_UNAVAILABLE");
+          }
+          remainingDebt = Number(debt.montoRestante ?? debt.monto ?? 0);
+          if (remainingDebt <= 0) throw new Error("DEBT_ALREADY_PAID");
+          if (amount > remainingDebt) throw new Error("PAYMENT_EXCEEDS_DEBT");
+          remainingDebt -= amount;
+          debtPaid = remainingDebt <= 0;
+        }
+
+        const nextDueDate = debtPaid ? null : getNextDueDate(
           currentObligation.frecuencia,
           currentObligation.fechaProximoPago,
           currentObligation.diaVencimiento,
@@ -471,9 +542,22 @@ const Movimientos = ({ isOpen, onClose }) => {
         transaction.update(obligationRef, {
           fechaUltimoPeriodoPagado: currentObligation.fechaProximoPago,
           fechaUltimoPago: serverTimestamp(),
-          fechaProximoPago: nextDueDate,
-          proximoPagoNumero: nextPaymentNumber,
+          ...(nextDueDate ? {
+            fechaProximoPago: nextDueDate,
+            proximoPagoNumero: nextPaymentNumber,
+          } : {}),
+          ...(debtRef ? {
+            deudaRestante: remainingDebt,
+            ...(debtPaid ? { activa: false, deudaPagada: true } : {}),
+          } : {}),
         });
+        if (debtRef) {
+          transaction.update(debtRef, {
+            montoRestante: remainingDebt,
+            pagada: debtPaid,
+            ultimaActualizacion: serverTimestamp(),
+          });
+        }
         transaction.set(movementRef, {
           userId: user.uid,
           usuarioId: user.uid,
@@ -484,29 +568,209 @@ const Movimientos = ({ isOpen, onClose }) => {
           establecimiento: currentObligation.nombre,
           tags: ["OBLIGACION"],
           obligacionId: obligation.id,
+          ...(debtRef ? { deudaId: currentObligation.deudaId } : {}),
           origen: "obligacion",
           fechaHora: paymentDate,
           fechaCreacion: serverTimestamp(),
         });
 
-        return { balance: balance - amount, nextDueDate, nextPaymentNumber };
+        return {
+          balance: balance - amount,
+          nextDueDate,
+          nextPaymentNumber,
+          remainingDebt,
+          debtPaid,
+          debtId: currentObligation.deudaId || null,
+          paidPeriod: currentObligation.fechaProximoPago,
+          paidAt: paymentDate,
+        };
       });
 
       setAccounts((current) => current.map((account) => account.id === obligation.cuentaId
         ? { ...account, saldo: payment.balance }
         : account));
-      setObligations((current) => current.map((item) => item.id === obligation.id
-        ? { ...item, fechaProximoPago: payment.nextDueDate, proximoPagoNumero: payment.nextPaymentNumber }
-        : item).sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
-      showToast(`Obligación cubierta. Próximo pago: ${formatObligationDate(payment.nextDueDate)}`, "success");
+      if (payment.debtPaid) {
+        setObligations((current) => current.map((item) => item.id === obligation.id
+          ? {
+            ...item,
+            activa: false,
+            deudaPagada: true,
+            deudaRestante: 0,
+            fechaUltimoPago: payment.paidAt,
+            fechaUltimoPeriodoPagado: payment.paidPeriod,
+          }
+          : item));
+        setObligationPaymentAmounts((current) => ({ ...current, [obligation.id]: "0" }));
+        showToast("🎉 Deuda pagada completamente; la obligación se desactivó", "success");
+      } else {
+        setObligations((current) => current.map((item) => item.id === obligation.id
+          ? {
+            ...item,
+            fechaUltimoPago: payment.paidAt,
+            fechaUltimoPeriodoPagado: payment.paidPeriod,
+            ...(payment.nextDueDate ? { fechaProximoPago: payment.nextDueDate } : {}),
+            proximoPagoNumero: payment.nextPaymentNumber,
+            ...(obligation.deudaId ? { deudaRestante: payment.remainingDebt } : {}),
+          }
+          : item).sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+        if (obligation.deudaId) {
+          setObligationPaymentAmounts((current) => ({
+            ...current,
+            [obligation.id]: formatMoneyInput(String(Math.min(Number(obligation.valor || 0), payment.remainingDebt))),
+          }));
+        }
+        showToast(`Obligación cubierta. Próximo pago: ${formatObligationDate(payment.nextDueDate)}`, "success");
+      }
     } catch (error) {
       console.error("Error pagando obligación:", error);
       if (error.message === "INSUFFICIENT_BALANCE") {
         showToast("Saldo insuficiente para pagar esta obligación", "error");
+      } else if (error.message === "PAYMENT_EXCEEDS_DEBT") {
+        showToast("El pago no puede superar el saldo pendiente de la deuda", "error");
+      } else if (error.message === "DEBT_UNAVAILABLE" || error.message === "DEBT_ALREADY_PAID") {
+        showToast("La deuda asociada ya no está pendiente", "error");
       } else if (error.message === "OBLIGATION_UNAVAILABLE") {
         showToast("Esta obligación ya no está activa", "error");
       } else {
         showToast("No se pudo pagar la obligación", "error");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayCreditObligation = async (obligation, amount) => {
+    const user = auth.currentUser;
+    const sourceAccountId = obligationPaymentAccounts[obligation.id];
+    const sourceAccount = accounts.find((account) => account.id === sourceAccountId);
+    if (!user) {
+      showToast("Necesitas iniciar sesión", "error");
+      return;
+    }
+    if (!sourceAccount || sourceAccount.tipoCuenta === "credito") {
+      showToast("Selecciona una cuenta de gastos para pagar la tarjeta", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      showToast("Ingresa el valor realmente pagado", "error");
+      return;
+    }
+
+    const obligationRef = doc(db, "obligaciones", obligation.id);
+    const sourceRef = doc(db, "cuentas", sourceAccountId);
+    const movementRef = doc(collection(db, "movimientos"));
+    const paymentDate = new Date();
+    setLoading(true);
+    try {
+      const payment = await runTransaction(db, async (transaction) => {
+        const obligationSnapshot = await transaction.get(obligationRef);
+        if (!obligationSnapshot.exists()) throw new Error("OBLIGATION_UNAVAILABLE");
+        const currentObligation = obligationSnapshot.data();
+        if (!currentObligation.activa || currentObligation.usuarioId !== user.uid ||
+          currentObligation.tipo !== "pago_tarjeta") {
+          throw new Error("OBLIGATION_UNAVAILABLE");
+        }
+        const cardRef = doc(db, "cuentas", currentObligation.tarjetaId);
+        const sourceSnapshot = await transaction.get(sourceRef);
+        const cardSnapshot = await transaction.get(cardRef);
+        if (!sourceSnapshot.exists() || !cardSnapshot.exists()) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+
+        const fundingAccount = sourceSnapshot.data();
+        const cardAccount = cardSnapshot.data();
+        if (fundingAccount.usuarioId !== user.uid || (fundingAccount.tipoCuenta || "gastos") !== "gastos" ||
+          cardAccount.usuarioId !== user.uid || cardAccount.tipoCuenta !== "credito") {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        const balance = Number(fundingAccount.saldo || 0);
+        if (balance < amount) throw new Error("INSUFFICIENT_BALANCE");
+        const statementRemaining = Number(currentObligation.montoPendiente ?? currentObligation.valor ?? 0);
+        if (amount > statementRemaining) throw new Error("PAYMENT_EXCEEDS_STATEMENT");
+        const creditChanges = applyCreditPayment(cardAccount, amount);
+        const remaining = statementRemaining - amount;
+        const paid = remaining <= 0;
+
+        transaction.update(sourceRef, {
+          saldo: balance - amount,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(cardRef, {
+          ...creditChanges,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(obligationRef, {
+          montoPendiente: remaining,
+          activa: !paid,
+          fechaUltimoPago: serverTimestamp(),
+          ...(paid ? { fechaUltimoPeriodoPagado: currentObligation.fechaCorte } : {}),
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: sourceAccountId,
+          cuentaBanco: fundingAccount.banco || "",
+          cuentaNombre: fundingAccount.nombre || "",
+          cuentaDestinoId: currentObligation.tarjetaId,
+          cuentaDestinoBanco: cardAccount.banco || "",
+          cuentaDestinoNombre: cardAccount.nombre || "",
+          valor: amount,
+          descripcion: `PAGO EXTRACTO TARJETA ${cardAccount.nombre || ""}`.trim(),
+          tipo: "pago_tarjeta",
+          origen: "obligacion_tarjeta",
+          obligacionAbonos: [{ obligacionId: obligation.id, valor: amount }],
+          fechaHora: paymentDate,
+          fechaCreacion: serverTimestamp(),
+        });
+
+        return {
+          sourceBalance: balance - amount,
+          cardBalance: creditChanges.saldo,
+          cardDebt: creditChanges.deudaActual,
+          remaining,
+          paid,
+          paidAt: paymentDate,
+          cutoffDate: currentObligation.fechaCorte,
+          cardId: currentObligation.tarjetaId,
+        };
+      });
+
+      setAccounts((current) => current.map((account) => {
+        if (account.id === sourceAccountId) return { ...account, saldo: payment.sourceBalance };
+        if (account.id === payment.cardId) {
+          return { ...account, saldo: payment.cardBalance, deudaActual: payment.cardDebt };
+        }
+        return account;
+      }));
+      setObligations((current) => current.map((item) => item.id === obligation.id
+        ? {
+          ...item,
+          montoPendiente: payment.remaining,
+          activa: !payment.paid,
+          fechaUltimoPago: payment.paidAt,
+          ...(payment.paid ? { fechaUltimoPeriodoPagado: payment.cutoffDate } : {}),
+        }
+        : item));
+      setObligationPaymentAmounts((current) => ({
+        ...current,
+        [obligation.id]: payment.paid ? "0" : formatMoneyInput(String(payment.remaining)),
+      }));
+      showToast(payment.paid
+        ? "Pago del extracto registrado; tarjeta abonada"
+        : `Abono registrado. Saldo del extracto: $${formatMoney(payment.remaining)}`, "success");
+    } catch (error) {
+      console.error("Error pagando extracto de tarjeta:", error);
+      if (error.message === "INSUFFICIENT_BALANCE") {
+        showToast("Saldo insuficiente en la cuenta para este pago", "error");
+      } else if (error.message === "PAYMENT_EXCEEDS_STATEMENT") {
+        showToast("El pago no puede superar el saldo pendiente de este extracto", "error");
+      } else if (error.message === "PAYMENT_EXCEEDS_CREDIT_DEBT") {
+        showToast("El saldo actual de la tarjeta no permite aplicar este pago", "error");
+      } else if (error.message === "OBLIGATION_UNAVAILABLE") {
+        showToast("Este extracto ya no está pendiente", "error");
+      } else {
+        showToast("No se pudo pagar el extracto de la tarjeta", "error");
       }
     } finally {
       setLoading(false);
@@ -679,9 +943,47 @@ const Movimientos = ({ isOpen, onClose }) => {
             throw new Error("INVALID_CREDIT_ADVANCE_INSTALLMENTS");
           }
           const valorTotal = valor + cargoConfigurado;
+          const statementDates = getCreditStatementForPurchase(account, fechaHora);
+          if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+          const startDate = getLocalDateString(statementDates.startDate);
+          const cutoffDate = getLocalDateString(statementDates.cutoffDate);
+          const paymentDate = getLocalDateString(statementDates.paymentDate);
+          const obligationId = `tarjeta-${selectedCuentaId}-${cutoffDate}`;
+          const obligationRef = doc(db, "obligaciones", obligationId);
+          const obligationSnapshot = await transaction.get(obligationRef);
+          const previousObligation = obligationSnapshot.exists() ? obligationSnapshot.data() : null;
+          if (previousObligation && (
+            previousObligation.usuarioId !== user.uid ||
+            previousObligation.tarjetaId !== selectedCuentaId
+          )) {
+            throw new Error("CREDIT_OBLIGATION_CONFLICT");
+          }
+          const totalStatement = Number(previousObligation?.valor || 0) + valorTotal;
+          const remainingStatement =
+            Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + valorTotal;
 
           transaction.update(accountRef, {
             ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(obligationRef, {
+            usuarioId: user.uid,
+            tipo: "pago_tarjeta",
+            nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+            tarjetaId: selectedCuentaId,
+            tarjetaNombre: account.nombre || "",
+            tarjetaBanco: account.banco || "",
+            cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+            fechaInicioCiclo: startDate,
+            fechaCorte: cutoffDate,
+            fechaProximoPago: paymentDate,
+            diaVencimiento: Number(paymentDate.slice(-2)),
+            frecuencia: "mensual",
+            valor: totalStatement,
+            montoPendiente: remainingStatement,
+            activa: remainingStatement > 0,
+            anulada: false,
+            ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
             ultimaActualizacion: serverTimestamp(),
           });
           transaction.set(movementRef, {
@@ -698,6 +1000,9 @@ const Movimientos = ({ isOpen, onClose }) => {
             tags: finalTags,
             tipo: "credito_avance",
             origen: "tarjeta_credito",
+            obligacionId: obligationId,
+            fechaCorteTarjeta: cutoffDate,
+            fechaLimitePagoTarjeta: paymentDate,
             fechaHora,
             fechaCreacion: serverTimestamp(),
           });
@@ -707,12 +1012,37 @@ const Movimientos = ({ isOpen, onClose }) => {
             debt: creditChanges.deudaActual,
             valorTotal,
             installments: cuotasConfiguradas,
+            obligation: {
+              id: obligationId,
+              usuarioId: user.uid,
+              tipo: "pago_tarjeta",
+              nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+              tarjetaId: selectedCuentaId,
+              tarjetaNombre: account.nombre || "",
+              tarjetaBanco: account.banco || "",
+              cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+              fechaInicioCiclo: startDate,
+              fechaCorte: cutoffDate,
+              fechaProximoPago: paymentDate,
+              diaVencimiento: Number(paymentDate.slice(-2)),
+              frecuencia: "mensual",
+              valor: totalStatement,
+              montoPendiente: remainingStatement,
+              activa: remainingStatement > 0,
+              anulada: false,
+            },
           };
         });
 
         setAccounts((current) => current.map((account) => account.id === selectedCuentaId
           ? { ...account, saldo: creditResult.available, deudaActual: creditResult.debt }
           : account));
+        setObligations((current) => [
+          ...current.filter((obligation) => obligation.id !== creditResult.obligation.id),
+          creditResult.obligation,
+        ].sort((first, second) =>
+          String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
+        ));
         setHistorial((current) => [...current, {
           id: Date.now().toString(),
           establecimiento,
@@ -754,9 +1084,47 @@ const Movimientos = ({ isOpen, onClose }) => {
             throw new Error("CREDIT_ACCOUNT_INVALID");
           }
           const creditChanges = applyCreditPurchase(account, valor);
+          const statementDates = getCreditStatementForPurchase(account, fechaHora);
+          if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+          const startDate = getLocalDateString(statementDates.startDate);
+          const cutoffDate = getLocalDateString(statementDates.cutoffDate);
+          const paymentDate = getLocalDateString(statementDates.paymentDate);
+          const obligationId = `tarjeta-${selectedCuentaId}-${cutoffDate}`;
+          const obligationRef = doc(db, "obligaciones", obligationId);
+          const obligationSnapshot = await transaction.get(obligationRef);
+          const previousObligation = obligationSnapshot.exists() ? obligationSnapshot.data() : null;
+          if (previousObligation && (
+            previousObligation.usuarioId !== user.uid ||
+            previousObligation.tarjetaId !== selectedCuentaId
+          )) {
+            throw new Error("CREDIT_OBLIGATION_CONFLICT");
+          }
+          const totalStatement = Number(previousObligation?.valor || 0) + valor;
+          const remainingStatement =
+            Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + valor;
 
           transaction.update(accountRef, {
             ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(obligationRef, {
+            usuarioId: user.uid,
+            tipo: "pago_tarjeta",
+            nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+            tarjetaId: selectedCuentaId,
+            tarjetaNombre: account.nombre || "",
+            tarjetaBanco: account.banco || "",
+            cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+            fechaInicioCiclo: startDate,
+            fechaCorte: cutoffDate,
+            fechaProximoPago: paymentDate,
+            diaVencimiento: Number(paymentDate.slice(-2)),
+            frecuencia: "mensual",
+            valor: totalStatement,
+            montoPendiente: remainingStatement,
+            activa: remainingStatement > 0,
+            anulada: false,
+            ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
             ultimaActualizacion: serverTimestamp(),
           });
           transaction.set(movementRef, {
@@ -770,16 +1138,49 @@ const Movimientos = ({ isOpen, onClose }) => {
             tags: finalTags,
             tipo: "credito_compra",
             origen: "tarjeta_credito",
+            obligacionId: obligationId,
+            fechaCorteTarjeta: cutoffDate,
+            fechaLimitePagoTarjeta: paymentDate,
             fechaHora,
             fechaCreacion: serverTimestamp(),
           });
 
-          return { available: creditChanges.saldo, debt: creditChanges.deudaActual };
+          return {
+            available: creditChanges.saldo,
+            debt: creditChanges.deudaActual,
+            obligation: {
+              id: obligationId,
+              usuarioId: user.uid,
+              tipo: "pago_tarjeta",
+              nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+              tarjetaId: selectedCuentaId,
+              tarjetaNombre: account.nombre || "",
+              tarjetaBanco: account.banco || "",
+              cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+              fechaInicioCiclo: startDate,
+              fechaCorte: cutoffDate,
+              fechaProximoPago: paymentDate,
+              diaVencimiento: Number(paymentDate.slice(-2)),
+              frecuencia: "mensual",
+              valor: totalStatement,
+              montoPendiente: remainingStatement,
+              activa: remainingStatement > 0,
+              anulada: false,
+            },
+          };
         });
 
         setAccounts((current) => current.map((account) => account.id === selectedCuentaId
           ? { ...account, saldo: creditResult.available, deudaActual: creditResult.debt }
           : account));
+        setObligations((current) => [
+          ...current.filter((item) => item.id !== creditResult.obligation.id),
+          creditResult.obligation,
+        ].sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+        setObligationPaymentAmounts((current) => ({
+          ...current,
+          [creditResult.obligation.id]: formatMoneyInput(String(creditResult.obligation.montoPendiente)),
+        }));
         setHistorial((current) => [...current, {
           id: Date.now().toString(),
           establecimiento,
@@ -836,6 +1237,10 @@ const Movimientos = ({ isOpen, onClose }) => {
       console.error("Error guardando movimiento:", error);
       showToast(error.message === "CREDIT_LIMIT_EXCEEDED"
         ? "La compra supera el cupo disponible de la tarjeta"
+        : error.message === "CREDIT_STATEMENT_DATES_UNAVAILABLE"
+        ? "Configura las fechas de corte y pago de la tarjeta"
+        : error.message === "CREDIT_OBLIGATION_CONFLICT"
+        ? "No se pudo asociar la compra al extracto de esta tarjeta"
         : "No se pudo crear el movimiento", "error");
     } finally {
       setLoading(false);
@@ -1001,7 +1406,7 @@ const Movimientos = ({ isOpen, onClose }) => {
             </div>
           )}
 
-          {mode === "pago" && (
+          {(mode === "pago" || mode === "avance") && (
             <div className="mov-field">
               <label className="mov-checkbox-label" htmlFor="usePreviousDate">
                 <input
@@ -1019,13 +1424,15 @@ const Movimientos = ({ isOpen, onClose }) => {
                     }
                   }}
                 />
-                <span>Registrar como pago anterior</span>
+                <span>
+                  {mode === "avance" ? "Registrar con una fecha anterior" : "Registrar como pago anterior"}
+                </span>
               </label>
 
               {usePreviousDate && (
                 <>
                   <label className="mov-label" htmlFor="fechaHora">
-                    Fecha y hora del pago
+                    {mode === "avance" ? "Fecha y hora del avance" : "Fecha y hora del pago"}
                   </label>
                   <input
                     id="fechaHora"
@@ -1169,54 +1576,109 @@ const Movimientos = ({ isOpen, onClose }) => {
           </section>
         )}
 
-        {obligations.length > 0 && (
+        {(pendingObligations.length > 0 || paidObligationsThisMonth.length > 0) && (
           <section className="mov-budgets mov-obligations" aria-labelledby="obligations-title">
             <div className="mov-budgets__heading">
               <div>
                 <h3 id="obligations-title">Obligaciones · pagar después</h3>
                 <p>Al pagar, se registra el movimiento y se programa el siguiente periodo.</p>
               </div>
-              <span className="mov-budgets__count">{obligations.length}</span>
+              <span className="mov-budgets__count">{pendingObligations.length}</span>
             </div>
-            <div className="mov-budgets__list">
-              {obligations.map((obligation) => (
-                <article className="mov-budget" key={obligation.id}>
-                  <div>
-                    <strong>{obligation.nombre}</strong>
-                    <span>
-                      ${formatMoney(obligation.valor)} · {obligation.cuentaNombre} · {formatObligationSchedule(obligation)} · Próximo: {formatObligationDate(obligation.fechaProximoPago)}
-                    </span>
-                  </div>
-                  <div className="mov-obligation-payment">
-                  <label>
-                    Valor realmente pagado
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      required
-                      aria-label={`Valor realmente pagado de ${obligation.nombre}`}
-                      value={obligationPaymentAmounts[obligation.id] ?? ""}
-                      onChange={(event) => setObligationPaymentAmounts((current) => ({
-                        ...current,
-                        [obligation.id]: formatMoneyInput(event.target.value),
-                      }))}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="mov-budget__accept"
-                    disabled={loading}
-                    onClick={() => handlePayObligation(
-                      obligation,
-                      Number((obligationPaymentAmounts[obligation.id] || "").replace(/\./g, ""))
-                    )}
-                  >
-                    Pagar obligación
-                  </button>
-                  </div>
-                </article>
-              ))}
-            </div>
+            {pendingObligations.length > 0 && (
+              <div className="mov-budgets__list">
+                {pendingObligations.map((obligation) => (
+                  <article className="mov-budget" key={`pending-${obligation.id}`}>
+                    <div>
+                      <strong>{obligation.nombre}</strong>
+                      <span>
+                        ${formatMoney(obligation.tipo === "pago_tarjeta"
+                          ? obligation.montoPendiente ?? obligation.valor
+                          : obligation.valor)}
+                        {" · "}{obligation.tipo === "pago_tarjeta"
+                          ? `${obligation.tarjetaBanco} · ${obligation.tarjetaNombre} · Corte ${formatObligationDate(obligation.fechaCorte)}`
+                          : `${obligation.cuentaNombre} · ${formatObligationSchedule(obligation)}`}
+                        {" · Próximo: "}{formatObligationDate(obligation.fechaProximoPago)}
+                      </span>
+                      {obligation.deudaId && (
+                        <span>Saldo de la deuda pendiente: ${formatMoney(obligation.deudaRestante)}</span>
+                      )}
+                    </div>
+                    <div className="mov-obligation-payment">
+                      <label>
+                        {obligation.tipo === "pago_tarjeta" ? "Valor a abonar" : "Valor realmente pagado"}
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          aria-label={`Valor realmente pagado de ${obligation.nombre}`}
+                          value={obligationPaymentAmounts[obligation.id] ?? ""}
+                          placeholder={obligation.tipo === "pago_tarjeta"
+                            ? `Máximo $${formatMoney(obligation.montoPendiente ?? obligation.valor)}`
+                            : obligation.deudaId
+                              ? `Máximo $${formatMoney(obligation.deudaRestante)}`
+                              : ""}
+                          onChange={(event) => setObligationPaymentAmounts((current) => ({
+                            ...current,
+                            [obligation.id]: formatMoneyInput(event.target.value),
+                          }))}
+                        />
+                      </label>
+                      {obligation.tipo === "pago_tarjeta" && (
+                        <label>
+                          Pagar desde
+                          <select
+                            value={obligationPaymentAccounts[obligation.id] || ""}
+                            onChange={(event) => setObligationPaymentAccounts((current) => ({
+                              ...current,
+                              [obligation.id]: event.target.value,
+                            }))}
+                          >
+                            <option value="">Selecciona cuenta</option>
+                            {accounts
+                              .filter((account) => (account.tipoCuenta || "gastos") === "gastos")
+                              .map((account) => (
+                                <option key={account.id} value={account.id}>
+                                  {account.nombre} · ${formatMoney(account.saldo)}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      )}
+                      <button
+                        type="button"
+                        className="mov-budget__accept"
+                        disabled={loading}
+                        onClick={() => handlePayObligation(
+                          obligation,
+                          Number((obligationPaymentAmounts[obligation.id] || "").replace(/\./g, ""))
+                        )}
+                      >
+                        {obligation.tipo === "pago_tarjeta" ? "Abonar tarjeta" : "Pagar obligación"}
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            {paidObligationsThisMonth.length > 0 && (
+              <div className="mov-obligations__paid">
+                <h4>Pagadas este mes</h4>
+                <div className="mov-budgets__list">
+                  {paidObligationsThisMonth.map((obligation) => (
+                    <article className="mov-budget mov-budget--paid" key={`paid-${obligation.id}`}>
+                      <div>
+                        <strong>{obligation.nombre}</strong>
+                        <span>
+                          ${formatMoney(obligation.valor)} · {obligation.cuentaNombre} · Periodo pagado: {formatObligationDate(obligation.fechaUltimoPeriodoPagado)}
+                        </span>
+                      </div>
+                      <span className="mov-obligations__paid-status">Pagada</span>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         )}
 

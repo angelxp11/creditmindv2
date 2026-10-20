@@ -8,6 +8,28 @@ import "./home.css";
 
 const BAR_MAX_HEIGHT = 140; // px
 
+const getObligationMonth = (value) => {
+  if (typeof value === "string") return value.slice(0, 7);
+  const date = typeof value?.toDate === "function"
+    ? value.toDate()
+    : value instanceof Date
+      ? value
+      : null;
+  return date && !Number.isNaN(date.getTime())
+    ? getLocalDateString(date).slice(0, 7)
+    : "";
+};
+
+const getObligationDateString = (value) => {
+  if (typeof value === "string") return value.slice(0, 10);
+  const date = typeof value?.toDate === "function"
+    ? value.toDate()
+    : value instanceof Date
+      ? value
+      : null;
+  return date && !Number.isNaN(date.getTime()) ? getLocalDateString(date) : "";
+};
+
 const normalizeTagValue = (value) => String(value ?? "").trim().toUpperCase();
 
 const normalizeTagList = (list = []) => {
@@ -94,6 +116,7 @@ const Home = () => {
   const [budgetSpent, setBudgetSpent] = useState(0);
   const [activeBudgetRows, setActiveBudgetRows] = useState([]);
   const [pendingObligations, setPendingObligations] = useState([]);
+  const [paidCardObligationsThisMonth, setPaidCardObligationsThisMonth] = useState([]);
   const [loading, setLoading] = useState(true);
   const [animate, setAnimate] = useState(false);
   const totalAhorrado = savingsAccounts.reduce(
@@ -137,15 +160,23 @@ const Home = () => {
         const obligationsSnapshot = await getDocs(
           query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))
         );
-        setPendingObligations(
-          obligationsSnapshot.docs
-            .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
-            .filter((obligation) => obligation.activa && isObligationDue(
+        const currentMonth = getLocalDateString().slice(0, 7);
+        const allObligations = obligationsSnapshot.docs
+          .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }));
+        setPendingObligations(allObligations
+          .filter((obligation) => obligation.activa && !obligation.anulada && (
+            obligation.tipo === "pago_tarjeta" || isObligationDue(
               obligation.fechaProximoPago,
-              `${getLocalDateString().slice(0, 7)}-31`
-            ))
-            .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago)))
-        );
+              `${currentMonth}-31`
+            )
+          ))
+          .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+        setPaidCardObligationsThisMonth(allObligations
+          .filter((obligation) => obligation.tipo === "pago_tarjeta" &&
+            !obligation.activa &&
+            !obligation.anulada &&
+            getObligationMonth(obligation.fechaUltimoPago) === currentMonth)
+          .sort((a, b) => String(b.fechaUltimoPago).localeCompare(String(a.fechaUltimoPago))));
 
         if (account) {
           const budgetsSnapshot = await getDocs(
@@ -403,6 +434,9 @@ const Home = () => {
           <div>
             <span className="home-savings__eyebrow">Pagos recurrentes</span>
             <h2 id="home-obligations-title">Obligaciones por pagar</h2>
+            <p className="home-obligations__description">
+              Las compras con tarjeta se acumulan por ciclo de corte y se pagan antes de la fecha límite.
+            </p>
           </div>
           <span className="home-obligations__count">{pendingObligations.length}</span>
         </div>
@@ -414,13 +448,54 @@ const Home = () => {
               <article className="home-obligation" key={obligation.id}>
                 <div className="home-obligation__details">
                   <strong>{obligation.nombre}</strong>
-                  <span>{formatObligationSchedule(obligation)} · {String(obligation.fechaProximoPago).slice(0, 10) < getLocalDateString() ? "Venció" : "Vence"} {formatObligationDate(obligation.fechaProximoPago)} · {obligation.cuentaNombre}</span>
+                  <span>
+                    {obligation.tipo === "pago_tarjeta"
+                      ? obligation.fechaInicioCiclo
+                        ? `Ciclo de corte: ${formatObligationDate(obligation.fechaInicioCiclo)} – ${formatObligationDate(obligation.fechaCorte)}`
+                        : `Extracto con corte ${formatObligationDate(obligation.fechaCorte)}`
+                      : formatObligationSchedule(obligation)}
+                    {" · "}{String(obligation.fechaProximoPago).slice(0, 10) < getLocalDateString() ? "Venció" : "Vence"} {formatObligationDate(obligation.fechaProximoPago)}
+                    {" · "}{obligation.tipo === "pago_tarjeta"
+                      ? `${obligation.tarjetaBanco || ""} ${obligation.tarjetaNombre || ""}`.trim()
+                      : obligation.cuentaNombre}
+                  </span>
                 </div>
-                <strong className="home-obligation__amount">
-                  ${Number(obligation.valor || 0).toLocaleString("es-CO")}
-                </strong>
+                {obligation.tipo === "pago_tarjeta" ? (
+                  <div className="home-obligation__totals">
+                    <strong className="home-obligation__amount">
+                      Total acumulado: ${Number(obligation.valor || 0).toLocaleString("es-CO")}
+                    </strong>
+                    <span className="home-obligation__remaining">
+                      Pendiente: ${Number(obligation.montoPendiente ?? obligation.valor ?? 0).toLocaleString("es-CO")}
+                    </span>
+                  </div>
+                ) : (
+                  <strong className="home-obligation__amount">
+                    ${Number(obligation.valor || 0).toLocaleString("es-CO")}
+                  </strong>
+                )}
               </article>
             ))}
+          </div>
+        )}
+        {paidCardObligationsThisMonth.length > 0 && (
+          <div className="home-obligations__paid">
+            <h3>Extractos de tarjeta pagados este mes</h3>
+            <div className="home-obligations__list">
+              {paidCardObligationsThisMonth.map((obligation) => (
+                <article className="home-obligation home-obligation--paid" key={obligation.id}>
+                  <div className="home-obligation__details">
+                    <strong>{obligation.nombre}</strong>
+                    <span>
+                      Corte {formatObligationDate(obligation.fechaCorte)}
+                      {" · "}{obligation.tarjetaBanco || ""} {obligation.tarjetaNombre || ""}
+                      {" · Pagado "}{formatObligationDate(getObligationDateString(obligation.fechaUltimoPago))}
+                    </span>
+                  </div>
+                  <strong className="home-obligation__paid-status">Pagada</strong>
+                </article>
+              ))}
+            </div>
           </div>
         )}
       </section>

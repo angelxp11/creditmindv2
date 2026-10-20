@@ -7,13 +7,13 @@ import {
   getDocs,
   addDoc,
   updateDoc,
-  deleteDoc,
   writeBatch,
   serverTimestamp,
   doc,
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
+import { getLocalDateString } from "../movimientos/obligaciones/obligationUtils";
 import "./deudas.css";
 
 const initialForm = {
@@ -50,6 +50,16 @@ const Deudas = ({ isOpen, onClose }) => {
     deudaId: null,
     montoRestante: "",
   });
+  const [obligationModal, setObligationModal] = useState({
+    isOpen: false,
+    deudaId: null,
+    valor: "",
+    cuentaId: "",
+    frecuencia: "mensual",
+    fechaProximoPago: getLocalDateString(),
+    fechaPrimerPago: "",
+    fechaSegundoPago: "",
+  });
   const [editMenuOpenId, setEditMenuOpenId] = useState(null);
 
   useEffect(() => {
@@ -59,6 +69,7 @@ const Deudas = ({ isOpen, onClose }) => {
       setViewMode("view");
       setSelectedDeudaIds([]);
       setBulkPaymentModal({ isOpen: false, cuentaSeleccionada: "" });
+      setObligationModal((current) => ({ ...current, isOpen: false }));
       return;
     }
 
@@ -305,6 +316,111 @@ const Deudas = ({ isOpen, onClose }) => {
 
   const closeRemainingModal = () => setRemainingModal({ isOpen: false, deudaId: null, montoRestante: "" });
 
+  const openObligationModal = (deuda) => {
+    setObligationModal({
+      isOpen: true,
+      deudaId: deuda.id,
+      valor: "",
+      cuentaId: cuentas[0]?.id || "",
+      frecuencia: "mensual",
+      fechaProximoPago: getDateString(deuda.proximaFechaPago) || getLocalDateString(),
+      fechaPrimerPago: "",
+      fechaSegundoPago: "",
+    });
+    setEditMenuOpenId(null);
+  };
+
+  const closeObligationModal = () => setObligationModal((current) => ({
+    ...current,
+    isOpen: false,
+  }));
+
+  const handleObligationSubmit = async (event) => {
+    event.preventDefault();
+    const deuda = deudas.find((item) => item.id === obligationModal.deudaId);
+    const cuenta = cuentas.find((item) => item.id === obligationModal.cuentaId);
+    const valor = Number(obligationModal.valor.replace(/\./g, ""));
+    const fechaPrimerPago = obligationModal.frecuencia === "quincenal"
+      ? obligationModal.fechaPrimerPago
+      : obligationModal.fechaProximoPago;
+    const montoRestante = Number(deuda?.montoRestante ?? deuda?.monto ?? 0);
+    const user = auth.currentUser;
+
+    if (!user) {
+      showToast("No hay usuario autenticado", "error");
+      return;
+    }
+    if (!deuda || isPagada(deuda)) {
+      showToast("Esta deuda ya no está pendiente", "error");
+      return;
+    }
+    if (deuda.obligacionId) {
+      showToast("Esta deuda ya está vinculada a una obligación", "info");
+      return;
+    }
+    if (!cuenta) {
+      showToast("Selecciona una cuenta para pagar la obligación", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(valor) || valor <= 0 || valor > montoRestante || !fechaPrimerPago) {
+      showToast("El valor por pago debe ser mayor que cero y no superar el saldo de la deuda", "error");
+      return;
+    }
+    if (obligationModal.frecuencia === "quincenal") {
+      const primerDia = Number(fechaPrimerPago.slice(-2));
+      const segundoDia = Number(obligationModal.fechaSegundoPago.slice(-2));
+      if (!obligationModal.fechaSegundoPago ||
+        fechaPrimerPago.slice(0, 7) !== obligationModal.fechaSegundoPago.slice(0, 7) ||
+        primerDia >= segundoDia) {
+        showToast("Selecciona dos fechas del mismo mes; el segundo pago debe ser posterior al primero", "error");
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      const obligationRef = doc(collection(db, "obligaciones"));
+      const obligationData = {
+        usuarioId: user.uid,
+        nombre: deuda.nombre.trim().toUpperCase(),
+        valor,
+        cuentaId: cuenta.id,
+        cuentaBanco: cuenta.banco || "",
+        cuentaNombre: cuenta.nombre || "",
+        frecuencia: obligationModal.frecuencia,
+        fechaProximoPago: fechaPrimerPago,
+        diaVencimiento: Number(fechaPrimerPago.slice(-2)),
+        diaSegundoPago: obligationModal.frecuencia === "quincenal"
+          ? Number(obligationModal.fechaSegundoPago.slice(-2))
+          : null,
+        proximoPagoNumero: 1,
+        deudaId: deuda.id,
+        deudaRestante: montoRestante,
+        deudaPagada: false,
+        activa: true,
+        fechaCreacion: serverTimestamp(),
+      };
+      const batch = writeBatch(db);
+      batch.set(obligationRef, obligationData);
+      batch.update(doc(db, "deudas", deuda.id), {
+        obligacionId: obligationRef.id,
+        ultimaActualizacion: serverTimestamp(),
+      });
+      await batch.commit();
+
+      setDeudas((current) => current.map((item) =>
+        item.id === deuda.id ? { ...item, obligacionId: obligationRef.id } : item
+      ));
+      closeObligationModal();
+      showToast("Deuda vinculada a una obligación", "success");
+    } catch (error) {
+      console.error("Error creando obligación para la deuda:", error);
+      showToast("No se pudo crear la obligación para esta deuda", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRemainingChange = (e) => {
     const cleanValue = e.target.value.replace(/\./g, "");
     setRemainingModal((prev) => ({
@@ -322,7 +438,12 @@ const Deudas = ({ isOpen, onClose }) => {
 
     setLoading(true);
     try {
-      await deleteDoc(doc(db, "deudas", deudaId));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "deudas", deudaId));
+      if (deudaActual.obligacionId) {
+        batch.delete(doc(db, "obligaciones", deudaActual.obligacionId));
+      }
+      await batch.commit();
       setDeudas((prev) => prev.filter((deuda) => deuda.id !== deudaId));
       setSelectedDeudaIds((prev) => prev.filter((id) => id !== deudaId));
       showToast("Deuda eliminada correctamente", "success");
@@ -353,11 +474,21 @@ const Deudas = ({ isOpen, onClose }) => {
     setLoading(true);
     try {
       const deudaPagada = nuevoRestante <= 0;
-      await updateDoc(doc(db, "deudas", deudaActual.id), {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "deudas", deudaActual.id), {
         montoRestante: nuevoRestante,
         pagada: deudaPagada,
         ultimaActualizacion: serverTimestamp(),
       });
+      if (deudaActual.obligacionId) {
+        batch.update(doc(db, "obligaciones", deudaActual.obligacionId), {
+          deudaRestante: nuevoRestante,
+          deudaPagada,
+          ...(deudaPagada ? { activa: false } : {}),
+          ultimaActualizacion: serverTimestamp(),
+        });
+      }
+      await batch.commit();
 
       setDeudas((prev) =>
         prev.map((deuda) =>
@@ -422,21 +553,26 @@ const Deudas = ({ isOpen, onClose }) => {
       const nuevoSaldoCuenta = saldoCuenta - montoAPagar;
 
       // 1. Actualizar deuda
-      await updateDoc(doc(db, "deudas", paymentModal.deudaId), {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "deudas", paymentModal.deudaId), {
         montoRestante: nuevoMontoRestante,
         pagada: deudaPagada,
         ...(proximaFechaPago ? { proximaFechaPago } : {}),
         ultimaActualizacion: serverTimestamp(),
       });
-
-      // 2. Descontar saldo de cuenta
-      await updateDoc(doc(db, "cuentas", paymentModal.cuentaSeleccionada), {
+      if (deudaActual.obligacionId) {
+        batch.update(doc(db, "obligaciones", deudaActual.obligacionId), {
+          deudaRestante: nuevoMontoRestante,
+          ...(deudaPagada ? { activa: false, deudaPagada: true } : {}),
+          ultimaActualizacion: serverTimestamp(),
+        });
+      }
+      batch.update(doc(db, "cuentas", paymentModal.cuentaSeleccionada), {
         saldo: nuevoSaldoCuenta,
         ultimaActualizacion: serverTimestamp(),
       });
-
-      // 3. Registrar movimiento como egreso (establecimiento = nombre deuda)
-      await addDoc(collection(db, "movimientos"), {
+      const movementRef = doc(collection(db, "movimientos"));
+      batch.set(movementRef, {
         userId: user.uid,
         usuarioId: user.uid,
         cuentaId: paymentModal.cuentaSeleccionada,
@@ -448,6 +584,7 @@ const Deudas = ({ isOpen, onClose }) => {
         fechaCreacion: serverTimestamp(),
         fechaHora: new Date(),
       });
+      await batch.commit();
 
       // 4. Actualizar estado local
       setDeudas((prev) =>
@@ -498,6 +635,14 @@ const Deudas = ({ isOpen, onClose }) => {
           pagada: true,
           ultimaActualizacion: serverTimestamp(),
         });
+        if (deuda.obligacionId) {
+          batch.update(doc(db, "obligaciones", deuda.obligacionId), {
+            deudaRestante: 0,
+            activa: false,
+            deudaPagada: true,
+            ultimaActualizacion: serverTimestamp(),
+          });
+        }
 
         const movimientoRef = doc(collection(db, "movimientos"));
         movimientoRefs.push({ ref: movimientoRef, deuda });
@@ -610,7 +755,7 @@ const Deudas = ({ isOpen, onClose }) => {
                 value={formValues.proximaFechaPago} onChange={handleChange} />
             </div>
 
-            <button className="deudas-submit" type="submit">
+            <button className="deudas-submit" type="submit" disabled={loading}>
               {editingId ? "Actualizar deuda" : "Crear deuda"}
             </button>
 
@@ -738,6 +883,15 @@ const Deudas = ({ isOpen, onClose }) => {
                                   <button className="deudas-edit-subaction" type="button" onClick={() => handleEdit(deuda)}>
                                     Editar datos
                                   </button>
+                                  {!pagada && !deuda.obligacionId && (
+                                    <button
+                                      className="deudas-edit-subaction"
+                                      type="button"
+                                      onClick={() => openObligationModal(deuda)}
+                                    >
+                                      Convertir en obligación
+                                    </button>
+                                  )}
                                   <button className="deudas-remaining" type="button" onClick={() => { setEditMenuOpenId(null); openRemainingModal(deuda); }}>
                                     Restante
                                   </button>
@@ -907,6 +1061,103 @@ const Deudas = ({ isOpen, onClose }) => {
                 </button>
               </div>
             </div>
+          </div>
+        );
+      })()}
+
+      {obligationModal.isOpen && (() => {
+        const deuda = deudas.find((item) => item.id === obligationModal.deudaId);
+        const montoRestante = Number(deuda?.montoRestante ?? deuda?.monto ?? 0);
+        return (
+          <div className="deudas-modal-overlay" onClick={closeObligationModal}>
+            <form className="deudas-modal-content deudas-obligation-modal" onSubmit={handleObligationSubmit} onClick={(event) => event.stopPropagation()}>
+              <h3>Convertir deuda en obligación</h3>
+              <p>
+                {deuda?.nombre} · Saldo pendiente: <strong>${formatNumber(String(montoRestante))}</strong>
+              </p>
+              <label className="deudas-modal-field">
+                Valor de cada pago
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  value={obligationModal.valor}
+                  onChange={(event) => {
+                    const digits = event.target.value.replace(/\D/g, "");
+                    setObligationModal((current) => ({
+                      ...current,
+                      valor: digits ? formatNumber(digits) : "",
+                    }));
+                  }}
+                  onKeyDown={handleMontoKeyDown}
+                  onPaste={handleMontoPaste}
+                  placeholder={`Máximo $${formatNumber(String(montoRestante))}`}
+                />
+              </label>
+              <label className="deudas-modal-field">
+                Cuenta para pagar
+                <select
+                  required
+                  value={obligationModal.cuentaId}
+                  onChange={(event) => setObligationModal((current) => ({ ...current, cuentaId: event.target.value }))}
+                >
+                  <option value="">Selecciona una cuenta</option>
+                  {cuentas.map((cuenta) => (
+                    <option key={cuenta.id} value={cuenta.id}>{cuenta.nombre} – {cuenta.banco}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="deudas-modal-field">
+                Frecuencia
+                <select
+                  value={obligationModal.frecuencia}
+                  onChange={(event) => setObligationModal((current) => ({ ...current, frecuencia: event.target.value }))}
+                >
+                  <option value="mensual">Mensual</option>
+                  <option value="quincenal">Quincenal</option>
+                </select>
+              </label>
+              {obligationModal.frecuencia === "quincenal" ? (
+                <>
+                  <label className="deudas-modal-field">
+                    Fecha del primer pago
+                    <input
+                      type="date"
+                      required
+                      value={obligationModal.fechaPrimerPago}
+                      onChange={(event) => setObligationModal((current) => ({ ...current, fechaPrimerPago: event.target.value }))}
+                    />
+                  </label>
+                  <label className="deudas-modal-field">
+                    Fecha del segundo pago
+                    <input
+                      type="date"
+                      required
+                      value={obligationModal.fechaSegundoPago}
+                      onChange={(event) => setObligationModal((current) => ({ ...current, fechaSegundoPago: event.target.value }))}
+                    />
+                  </label>
+                </>
+              ) : (
+                <label className="deudas-modal-field">
+                  Próximo vencimiento
+                  <input
+                    type="date"
+                    required
+                    value={obligationModal.fechaProximoPago}
+                    onChange={(event) => setObligationModal((current) => ({ ...current, fechaProximoPago: event.target.value }))}
+                  />
+                </label>
+              )}
+              <div className="deudas-modal-buttons">
+                <button className="deudas-modal-btn deudas-modal-btn--primary" type="submit" disabled={loading}>
+                  Crear obligación
+                </button>
+                <button className="deudas-modal-btn deudas-modal-btn--secondary" type="button" onClick={closeObligationModal} disabled={loading}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
           </div>
         );
       })()}
