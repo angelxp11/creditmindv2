@@ -806,6 +806,35 @@
   margin-right: 4px;
 }
 
+.mov-suggestion-tag {
+  padding: 5px 9px;
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: 8px;
+  background: rgba(6, 182, 212, 0.08);
+  color: var(--accent-color);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.mov-suggestion-tag:hover {
+  background: rgba(6, 182, 212, 0.18);
+}
+
+.mov-suggestion-tag--selected,
+.mov-suggestion-tag--selected:hover {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+  color: white;
+}
+
+.mov-suggestion-hint {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .mov-suggestion-confidence {
   font-size: 0.85rem;
   color: var(--text-muted);
@@ -831,6 +860,12 @@
 .mov-apply-suggestion:hover {
   opacity: 0.85;
   transform: translateY(-1px);
+}
+
+.mov-apply-suggestion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .mov-apply-suggestion:active {

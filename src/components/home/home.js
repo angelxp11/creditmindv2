@@ -283,6 +283,16 @@ const Home = () => {
   const budgetProgress = Number(budgetSpent || 0);
   const availableBalance = currentBalance - budgetedBalance;
   const formatMoney = (value) => Number(value || 0).toLocaleString("es-CO");
+  const totalPendingObligations = pendingObligations.reduce(
+    (total, obligation) => total + (
+      Number(
+        obligation.tipo === "pago_tarjeta"
+          ? obligation.montoPendiente ?? obligation.valor
+          : obligation.valor
+      ) || 0
+    ),
+    0
+  );
 
   const categoryPalette = [
     "home-bar--category-1",
@@ -439,6 +449,10 @@ const Home = () => {
             </p>
           </div>
           <span className="home-obligations__count">{pendingObligations.length}</span>
+        </div>
+        <div className="home-obligations__total">
+          <span>Total pendiente este mes</span>
+          <strong>${formatMoney(totalPendingObligations)}</strong>
         </div>
         {pendingObligations.length === 0 ? (
           <p className="home-empty">No tienes obligaciones pendientes para este mes.</p>

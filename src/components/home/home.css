@@ -607,6 +607,26 @@
   font-weight: 700;
 }
 
+.home-obligations__total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.home-obligations__total strong {
+  flex-shrink: 0;
+  color: var(--text-title);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
 .home-obligations__list {
   display: grid;
   gap: 8px;

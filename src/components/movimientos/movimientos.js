@@ -17,6 +17,7 @@ import { showToast } from "../../resources/toastcontainer/ToastContainer";
 import { formatObligationDate, formatObligationSchedule, getLocalDateString, getNextDueDate } from "./obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
 import { applyCreditAdvance, applyCreditPayment, applyCreditPurchase, getCreditStatementDates, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
+import { getSimilarMovements } from "./tagSuggestionUtils";
 import "./movimientos.css";
 
 const initialForm = {
@@ -83,6 +84,7 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [selectedCuentaId, setSelectedCuentaId] = useState("");
   const [historial, setHistorial] = useState([]);
   const [sugerencia, setSugerencia] = useState(null);
+  const [selectedSuggestionTags, setSelectedSuggestionTags] = useState([]);
   const [mode, setMode] = useState("pago");
   const [usePreviousDate, setUsePreviousDate] = useState(false);
   const [budgetForm, setBudgetForm] = useState(initialBudget);
@@ -202,6 +204,8 @@ const Movimientos = ({ isOpen, onClose }) => {
       setFormValues({ ...initialForm, fechaHora: getCurrentDateTimeValue() });
       setTags([]);
       setTagInput("");
+      setSugerencia(null);
+      setSelectedSuggestionTags([]);
       setSelectedCuentaId("");
       setMode("pago");
       setUsePreviousDate(false);
@@ -244,21 +248,15 @@ const Movimientos = ({ isOpen, onClose }) => {
   const obtenerSugerencia = (establecimiento, valor) => {
     if (!establecimiento || !valor) {
       setSugerencia(null);
+      setSelectedSuggestionTags([]);
       return;
     }
 
-    const numero = Number(String(valor).replace(/\./g, ""));
-
-    const similares = historial.filter((mov) => {
-      const nombreActual = establecimiento.toUpperCase();
-      const nombreGuardado = mov.establecimiento?.toUpperCase() || "";
-      const coincideNombre = nombreGuardado.includes(nombreActual);
-      const coincideValor = Math.abs(mov.valor - numero) <= 10000;
-      return coincideNombre && coincideValor;
-    });
+    const similares = getSimilarMovements(historial, establecimiento, valor);
 
     if (similares.length === 0) {
       setSugerencia(null);
+      setSelectedSuggestionTags([]);
       return;
     }
 
@@ -281,6 +279,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         Math.round((similares.length / historial.length) * 300)
       ),
     });
+    setSelectedSuggestionTags([]);
   };
 
   const handleChange = (event) => {
@@ -347,6 +346,7 @@ const Movimientos = ({ isOpen, onClose }) => {
     setTags([]);
     setTagInput("");
     setSugerencia(null);
+    setSelectedSuggestionTags([]);
     setUsePreviousDate(false);
     setBudgetForm(initialBudget);
   };
@@ -1483,11 +1483,22 @@ const Movimientos = ({ isOpen, onClose }) => {
                 <div className="mov-suggestion-tags">
                   <span className="mov-suggestion-label">Tags sugeridos:</span>
                   {sugerencia.tags.map((tag) => (
-                    <span key={tag} className="mov-tag-chip">
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`mov-suggestion-tag${selectedSuggestionTags.includes(tag) ? " mov-suggestion-tag--selected" : ""}`}
+                      aria-pressed={selectedSuggestionTags.includes(tag)}
+                      onClick={() => setSelectedSuggestionTags((current) =>
+                        current.includes(tag)
+                          ? current.filter((selectedTag) => selectedTag !== tag)
+                          : [...current, tag]
+                      )}
+                    >
                       {tag}
-                    </span>
+                    </button>
                   ))}
                 </div>
+                <span className="mov-suggestion-hint">Selecciona los tags que quieras agregar.</span>
                 <div className="mov-suggestion-confidence">
                   📈 Confianza: {sugerencia.confianza}%
                 </div>
@@ -1499,11 +1510,12 @@ const Movimientos = ({ isOpen, onClose }) => {
                       ...prev,
                       establecimiento: sugerencia.establecimiento,
                     }));
-                    setTags(normalizeTags(sugerencia.tags));
-                    setTagInput("");
+                    setTags((current) => normalizeTags([...current, ...selectedSuggestionTags]));
+                    setSelectedSuggestionTags([]);
                   }}
+                  disabled={selectedSuggestionTags.length === 0}
                 >
-                  ✓ Aplicar sugerencia
+                  ✓ Agregar tags seleccionados
                 </button>
               </div>
             )}
