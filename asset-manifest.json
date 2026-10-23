@@ -1,16 +1,16 @@
 {
   "files": {
-    "main.css": "/creditmindv2/static/css/main.0686638e.css",
-    "main.js": "/creditmindv2/static/js/main.5e9aacf1.js",
+    "main.css": "/creditmindv2/static/css/main.c9e9a8fa.css",
+    "main.js": "/creditmindv2/static/js/main.94afe8bb.js",
     "static/media/credito.png": "/creditmindv2/static/media/credito.077373ae4c0cf094bae4.png",
     "static/media/ahorros.png": "/creditmindv2/static/media/ahorros.2cc7cde038ddada91886.png",
     "static/media/debito.png": "/creditmindv2/static/media/debito.00d189217c1e5ef345e7.png",
     "index.html": "/creditmindv2/index.html",
-    "main.0686638e.css.map": "/creditmindv2/static/css/main.0686638e.css.map",
-    "main.5e9aacf1.js.map": "/creditmindv2/static/js/main.5e9aacf1.js.map"
+    "main.c9e9a8fa.css.map": "/creditmindv2/static/css/main.c9e9a8fa.css.map",
+    "main.94afe8bb.js.map": "/creditmindv2/static/js/main.94afe8bb.js.map"
   },
   "entrypoints": [
-    "static/css/main.0686638e.css",
-    "static/js/main.5e9aacf1.js"
+    "static/css/main.c9e9a8fa.css",
+    "static/js/main.94afe8bb.js"
   ]
 }
