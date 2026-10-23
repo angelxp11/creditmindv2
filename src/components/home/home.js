@@ -1,9 +1,25 @@
 import React, { useEffect, useState } from "react";
+import { Check, ClipboardPaste, MapPin, X } from "lucide-react";
 import { auth, db } from "../../server/api";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  runTransaction,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
+import { showToast } from "../../resources/toastcontainer/ToastContainer";
 import { formatObligationDate, formatObligationSchedule, getLocalDateString, isObligationDue } from "../movimientos/obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
+import { applyCreditPurchase, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
+import {
+  findWalletAccount,
+  getShortcutTagSuggestions,
+  parseShortcutMovement,
+} from "./shortcutUtils";
 import "./home.css";
 
 const BAR_MAX_HEIGHT = 140; // px
@@ -50,6 +66,7 @@ const movementMatchesBudget = (budget, movement) => {
     budget.categoriaGlobal,
     budget.categoriaNombre,
     budget.establecimiento,
+    budget.nombreLegal,
     ...(Array.isArray(budget.tags) ? budget.tags : []),
   ].map((value) => normalizeTagValue(value));
   const movementNames = [
@@ -109,6 +126,7 @@ const matchingMovementsForBudget = (budget, accountId, movements = [], categoryC
 
 const Home = () => {
   const user = auth.currentUser;
+  const [accounts, setAccounts] = useState([]);
   const [defaultAccount, setDefaultAccount] = useState(null);
   const [savingsAccounts, setSavingsAccounts] = useState([]);
   const [creditAccounts, setCreditAccounts] = useState([]);
@@ -118,11 +136,31 @@ const Home = () => {
   const [pendingObligations, setPendingObligations] = useState([]);
   const [paidCardObligationsThisMonth, setPaidCardObligationsThisMonth] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [readingShortcut, setReadingShortcut] = useState(false);
+  const [savingShortcut, setSavingShortcut] = useState(false);
+  const [shortcutDraft, setShortcutDraft] = useState(null);
+  const [suggestedShortcutTags, setSuggestedShortcutTags] = useState([]);
+  const [newShortcutTag, setNewShortcutTag] = useState("");
+  const [pendingBudgets, setPendingBudgets] = useState([]);
+  const [movementHistory, setMovementHistory] = useState([]);
+  const [categoryCatalog, setCategoryCatalog] = useState([]);
   const [animate, setAnimate] = useState(false);
   const totalAhorrado = savingsAccounts.reduce(
     (total, account) => total + (Number(account.saldo) || 0),
     0
   );
+
+  useEffect(() => {
+    if (!shortcutDraft) return undefined;
+
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape" && !savingShortcut) {
+        setShortcutDraft(null);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [shortcutDraft, savingShortcut]);
 
   useEffect(() => {
     const fetchDefaultAccount = async () => {
@@ -132,15 +170,15 @@ const Home = () => {
       }
 
       try {
-        const snapshot = await getDocs(
-          query(
-            collection(db, "cuentas"),
-            where("usuarioId", "==", user.uid)
-          )
-        );
-        const accountDocs = snapshot.docs
+        const [accountsSnapshot, obligationsSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "cuentas"), where("usuarioId", "==", user.uid))),
+          getDocs(query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))),
+        ]);
+
+        const accountDocs = accountsSnapshot.docs
           .map((accountDoc) => ({ id: accountDoc.id, ...accountDoc.data() }))
           .sort((a, b) => (b.fechaCreacion?.toMillis?.() ?? 0) - (a.fechaCreacion?.toMillis?.() ?? 0));
+        setAccounts(accountDocs);
         const account = accountDocs.find(
           (accountDoc) =>
             accountDoc.esDefault && (accountDoc.tipoCuenta || "gastos") === "gastos"
@@ -157,9 +195,6 @@ const Home = () => {
         setSavingsAccounts(savings);
         setCreditAccounts(credit);
 
-        const obligationsSnapshot = await getDocs(
-          query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))
-        );
         const currentMonth = getLocalDateString().slice(0, 7);
         const allObligations = obligationsSnapshot.docs
           .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }));
@@ -179,12 +214,11 @@ const Home = () => {
           .sort((a, b) => String(b.fechaUltimoPago).localeCompare(String(a.fechaUltimoPago))));
 
         if (account) {
-          const budgetsSnapshot = await getDocs(
-            query(
-              collection(db, "presupuestos"),
-              where("usuarioId", "==", user.uid)
-            )
-          );
+          const [budgetsSnapshot, categoriesSnapshot, movementsSnapshot] = await Promise.all([
+            getDocs(query(collection(db, "presupuestos"), where("usuarioId", "==", user.uid))),
+            getDocs(query(collection(db, "categorias"), where("usuarioId", "==", user.uid))),
+            getDocs(query(collection(db, "movimientos"), where("userId", "==", user.uid))),
+          ]);
           const pendingBudgets = budgetsSnapshot.docs
             .map((budgetDoc) => ({ id: budgetDoc.id, ...budgetDoc.data() }))
             .filter(
@@ -193,6 +227,7 @@ const Home = () => {
                 budget.cuentaId === account.id &&
                 (budget.fechaFin || budget.fechaCreacion)
             );
+          setPendingBudgets(pendingBudgets);
 
           const today = new Date();
           const activeBudgets = pendingBudgets.filter((budget) => {
@@ -215,31 +250,15 @@ const Home = () => {
             0
           );
 
-          const categoriesSnapshot = await getDocs(
-            query(
-              collection(db, "categorias"),
-              where("usuarioId", "==", user.uid)
-            )
-          );
           const categoryList = categoriesSnapshot.docs.map((categoryDoc) => ({
             id: categoryDoc.id,
             ...categoryDoc.data(),
           }));
-
-          const movementsSnapshot = await getDocs(
-            query(
-              collection(db, "movimientos"),
-              where("userId", "==", user.uid)
-            )
-          );
-          const matchingMovements = movementsSnapshot.docs
-            .map((movementDoc) => movementDoc.data())
+          setCategoryCatalog(categoryList);
+          const allMovements = movementsSnapshot.docs.map((movementDoc) => movementDoc.data());
+          setMovementHistory(allMovements);
+          const matchingMovements = allMovements
             .filter((movement) => movement.cuentaId === account.id);
-
-          const spentByBudget = displayBudgets.reduce(
-            (total, budget) => total + matchingMovementsForBudget(budget, account.id, matchingMovements, categoryList),
-            0
-          );
 
           const activeBudgetRowsData = displayBudgets.map((budget) => {
             const spent = matchingMovementsForBudget(budget, account.id, matchingMovements, categoryList);
@@ -252,6 +271,10 @@ const Home = () => {
               remaining: Number(budget.valor || 0) - spent,
             };
           });
+          const spentByBudget = activeBudgetRowsData.reduce(
+            (total, budget) => total + budget.spent,
+            0
+          );
 
           setBudgetedBalance(targetBudge);
           setBudgetSpent(spentByBudget);
@@ -293,6 +316,281 @@ const Home = () => {
     ),
     0
   );
+
+  const handlePasteShortcut = async () => {
+    if (!navigator.clipboard?.readText) {
+      showToast("Este navegador no permite leer el portapapeles", "error");
+      return;
+    }
+
+    setReadingShortcut(true);
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const shortcutMovement = parseShortcutMovement(clipboardText);
+      const matchedAccount = findWalletAccount(accounts, shortcutMovement.tarjeta);
+      setSuggestedShortcutTags(getShortcutTagSuggestions(
+        movementHistory,
+        shortcutMovement.establecimiento,
+        shortcutMovement.valor
+      ));
+      setShortcutDraft({
+        ...shortcutMovement,
+        nombreEstablecimiento: shortcutMovement.establecimiento,
+        cuentaId: matchedAccount?.id || "",
+        walletAccountMatched: Boolean(matchedAccount),
+        tags: [],
+        cuotas: 1,
+      });
+      setNewShortcutTag("");
+    } catch (error) {
+      console.error("Error leyendo el movimiento del atajo:", error);
+      showToast(error.message || "No se pudo leer el movimiento del atajo", "error");
+    } finally {
+      setReadingShortcut(false);
+    }
+  };
+
+  const addShortcutTag = () => {
+    const tag = normalizeTagValue(newShortcutTag).replace(/,$/, "");
+    if (tag) {
+      setShortcutDraft((current) => current
+        ? {
+          ...current,
+          tags: current.tags?.includes(tag)
+            ? current.tags
+            : [...(current.tags || []), tag],
+        }
+        : current);
+      setNewShortcutTag("");
+    }
+  };
+
+  const handleShortcutTagKeyDown = (event) => {
+    if ([" ", ",", "Enter"].includes(event.key) && newShortcutTag.trim()) {
+      event.preventDefault();
+      addShortcutTag();
+    } else if (event.key === "Backspace" && !newShortcutTag && shortcutDraft?.tags?.length) {
+      setShortcutDraft((current) => current
+        ? { ...current, tags: current.tags.slice(0, -1) }
+        : current);
+    }
+  };
+
+  const handleConfirmShortcut = async () => {
+    if (!user) {
+      showToast("Necesitas iniciar sesión", "error");
+      return;
+    }
+    const account = accounts.find((item) => item.id === shortcutDraft?.cuentaId);
+    if (!account) {
+      showToast("Selecciona el método de pago correcto", "error");
+      return;
+    }
+    if (!["gastos", "credito"].includes(account.tipoCuenta || "gastos")) {
+      showToast("Las cuentas de ahorros no se pueden usar para pagos", "error");
+      return;
+    }
+
+    const legalName = String(shortcutDraft.establecimiento || "").trim().toUpperCase();
+    const displayName = String(shortcutDraft.nombreEstablecimiento || "").trim().toUpperCase();
+    const amount = Number(shortcutDraft.valor);
+    const movementDate = new Date(shortcutDraft.fechaHora);
+    const tags = normalizeTagList(shortcutDraft.tags || []);
+    const installments = Number(shortcutDraft.cuotas ?? 1);
+    if (!legalName || !displayName || !Number.isSafeInteger(amount) || amount <= 0 ||
+      Number.isNaN(movementDate.getTime()) || movementDate > new Date() ||
+      (account.tipoCuenta === "credito" &&
+        (!Number.isSafeInteger(installments) || installments < 1 || installments > 60))) {
+      showToast("Revisa el establecimiento, el importe y la fecha del movimiento", "error");
+      return;
+    }
+
+    const isCreditAccount = account.tipoCuenta === "credito";
+    const reservedAmount = pendingBudgets
+      .filter((budget) => budget.cuentaId === account.id)
+      .reduce((total, budget) => total + Number(budget.valor || 0), 0);
+    if (!isCreditAccount && amount > Number(account.saldo || 0) - reservedAmount) {
+      showToast("Saldo disponible insuficiente: hay dinero reservado en presupuestos", "error");
+      return;
+    }
+
+    setSavingShortcut(true);
+    const accountRef = doc(db, "cuentas", account.id);
+    const movementRef = doc(collection(db, "movimientos"));
+    try {
+      const saved = await runTransaction(db, async (transaction) => {
+        const accountSnapshot = await transaction.get(accountRef);
+        if (!accountSnapshot.exists()) throw new Error("ACCOUNT_UNAVAILABLE");
+        const currentAccount = accountSnapshot.data();
+        if (currentAccount.usuarioId !== user.uid) throw new Error("ACCOUNT_UNAVAILABLE");
+        if (!["gastos", "credito"].includes(currentAccount.tipoCuenta || "gastos")) {
+          throw new Error("ACCOUNT_INVALID_TYPE");
+        }
+
+        const movement = {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: account.id,
+          cuentaBanco: currentAccount.banco || "",
+          cuentaNombre: currentAccount.nombre || "",
+          valor: amount,
+          establecimiento: legalName,
+          nombreLegal: legalName,
+          nombreEstablecimiento: displayName,
+          tags,
+          ubicacion: shortcutDraft.ubicacion,
+          fechaHora: movementDate,
+          fechaCreacion: serverTimestamp(),
+        };
+
+        if (currentAccount.tipoCuenta === "credito") {
+          const creditChanges = applyCreditPurchase(currentAccount, amount);
+          const statementDates = getCreditStatementForPurchase(currentAccount, movementDate);
+          if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+          const startDate = getLocalDateString(statementDates.startDate);
+          const cutoffDate = getLocalDateString(statementDates.cutoffDate);
+          const paymentDate = getLocalDateString(statementDates.paymentDate);
+          const obligationId = `tarjeta-${account.id}-${cutoffDate}`;
+          const obligationRef = doc(db, "obligaciones", obligationId);
+          const obligationSnapshot = await transaction.get(obligationRef);
+          const previousObligation = obligationSnapshot.exists() ? obligationSnapshot.data() : null;
+          if (previousObligation && (
+            previousObligation.usuarioId !== user.uid ||
+            previousObligation.tarjetaId !== account.id
+          )) {
+            throw new Error("CREDIT_OBLIGATION_CONFLICT");
+          }
+
+          const totalStatement = Number(previousObligation?.valor || 0) + amount;
+          const remainingStatement =
+            Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + amount;
+          const obligation = {
+            usuarioId: user.uid,
+            tipo: "pago_tarjeta",
+            nombre: `PAGO TARJETA ${currentAccount.nombre || currentAccount.banco || ""}`.trim(),
+            tarjetaId: account.id,
+            tarjetaNombre: currentAccount.nombre || "",
+            tarjetaBanco: currentAccount.banco || "",
+            cuentaNombre: `${currentAccount.banco || ""} · ${currentAccount.nombre || ""}`.trim(),
+            fechaInicioCiclo: startDate,
+            fechaCorte: cutoffDate,
+            fechaProximoPago: paymentDate,
+            diaVencimiento: Number(paymentDate.slice(-2)),
+            frecuencia: "mensual",
+            valor: totalStatement,
+            montoPendiente: remainingStatement,
+            activa: remainingStatement > 0,
+            anulada: false,
+            ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+            ultimaActualizacion: serverTimestamp(),
+          };
+
+          transaction.update(accountRef, {
+            ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(obligationRef, obligation);
+          transaction.set(movementRef, {
+            ...movement,
+            cuentaBanco: currentAccount.banco || "",
+            cuentaNombre: currentAccount.nombre || "",
+            tipo: "credito_compra",
+            origen: "tarjeta_credito",
+            cuotas: installments,
+            obligacionId: obligationId,
+            fechaCorteTarjeta: cutoffDate,
+            fechaLimitePagoTarjeta: paymentDate,
+          });
+          return {
+            accountId: account.id,
+            saldo: creditChanges.saldo,
+            deudaActual: creditChanges.deudaActual,
+            obligation: { ...obligation, id: obligationId },
+          };
+        }
+
+        const currentBalance = Number(currentAccount.saldo || 0);
+        if (!Number.isFinite(currentBalance) || currentBalance < amount) {
+          throw new Error("INSUFFICIENT_BALANCE");
+        }
+        const nextBalance = currentBalance - amount;
+        transaction.update(accountRef, {
+          saldo: nextBalance,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.set(movementRef, movement);
+        return { accountId: account.id, saldo: nextBalance };
+      });
+
+      setAccounts((current) => current.map((item) =>
+        item.id === saved.accountId
+          ? { ...item, saldo: saved.saldo, ...(saved.deudaActual !== undefined ? { deudaActual: saved.deudaActual } : {}) }
+          : item
+      ));
+      if (saved.deudaActual !== undefined) {
+        setCreditAccounts((current) => current.map((item) =>
+          item.id === saved.accountId
+            ? { ...item, saldo: saved.saldo, deudaActual: saved.deudaActual }
+            : item
+        ));
+      }
+      if (defaultAccount?.id === saved.accountId) {
+        setDefaultAccount((current) => current ? { ...current, saldo: saved.saldo } : current);
+      }
+      const savedMovement = {
+        cuentaId: saved.accountId,
+        valor: amount,
+        establecimiento: legalName,
+        nombreLegal: legalName,
+        nombreEstablecimiento: displayName,
+        tags,
+        ubicacion: shortcutDraft.ubicacion,
+        fechaHora: movementDate,
+        ...(isCreditAccount ? { tipo: "credito_compra", cuotas: installments } : {}),
+      };
+      const updatedMovementHistory = [savedMovement, ...movementHistory];
+      setMovementHistory(updatedMovementHistory);
+      const updatedBudgetRows = activeBudgetRows.map((row) => {
+        const budget = pendingBudgets.find((item) => item.id === row.id);
+        if (!budget) return row;
+        const spent = matchingMovementsForBudget(
+          budget,
+          budget.cuentaId,
+          updatedMovementHistory,
+          categoryCatalog
+        );
+        return { ...row, spent, remaining: Number(budget.valor || 0) - spent };
+      });
+      setActiveBudgetRows(updatedBudgetRows);
+      setBudgetSpent(updatedBudgetRows.reduce((total, row) => total + row.spent, 0));
+      if (saved.obligation) {
+        setPendingObligations((current) => {
+        return [
+          ...current.filter((obligation) => obligation.id !== saved.obligation.id),
+          saved.obligation,
+        ].sort((first, second) =>
+          String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
+        );
+        });
+      }
+      showToast("Movimiento registrado correctamente", "success");
+      setShortcutDraft(null);
+      setNewShortcutTag("");
+    } catch (error) {
+      console.error("Error confirmando movimiento del atajo:", error);
+      const messages = {
+        ACCOUNT_UNAVAILABLE: "La cuenta seleccionada ya no está disponible",
+        ACCOUNT_INVALID_TYPE: "Las cuentas de ahorros no se pueden usar para pagos",
+        INSUFFICIENT_BALANCE: "El saldo de la cuenta ya no es suficiente",
+        CREDIT_LIMIT_EXCEEDED: "La compra supera el cupo disponible de la tarjeta",
+        CREDIT_STATEMENT_DATES_UNAVAILABLE: "Configura las fechas de corte y pago de la tarjeta",
+        CREDIT_OBLIGATION_CONFLICT: "No se pudo asociar la compra al extracto de esta tarjeta",
+      };
+      showToast(messages[error.message] || "No se pudo registrar el movimiento", "error");
+    } finally {
+      setSavingShortcut(false);
+    }
+  };
 
   const categoryPalette = [
     "home-bar--category-1",
@@ -350,6 +648,7 @@ const Home = () => {
   return (
     <div className="home-container">
       {loading && <Loading message="Cargando tu saldo..." />}
+      {readingShortcut && <Loading message="Leyendo el movimiento del atajo..." />}
       <section className="home-main-account">
         <span className="home-balance__account">
           {defaultAccount
@@ -608,6 +907,238 @@ const Home = () => {
           </div>
         </section>
       )}
+      {shortcutDraft && (
+        <div
+          className="home-shortcut-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !savingShortcut) {
+              setShortcutDraft(null);
+            }
+          }}
+        >
+          <section
+            className="home-shortcut-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="home-shortcut-title"
+          >
+            <header className="home-shortcut-modal__header">
+              <div>
+                <span className="home-savings__eyebrow">Movimiento detectado</span>
+                <h2 id="home-shortcut-title">Confirma tu compra</h2>
+              </div>
+              <button
+                type="button"
+                className="home-shortcut-modal__close"
+                onClick={() => setShortcutDraft(null)}
+                disabled={savingShortcut}
+                aria-label="Cerrar"
+              >
+                <X size={20} />
+              </button>
+            </header>
+
+            <div className="home-shortcut-modal__summary">
+              <div className="home-shortcut-modal__amount">
+                <span>Importe</span>
+                <strong>${Number(shortcutDraft.valor).toLocaleString("es-CO")}</strong>
+              </div>
+              <div className="home-shortcut-modal__field">
+                <span>Método de pago detectado</span>
+                {accounts
+                  .filter((account) => ["gastos", "credito"].includes(account.tipoCuenta || "gastos"))
+                  .filter((account) => (
+                    !shortcutDraft.walletAccountMatched || account.id === shortcutDraft.cuentaId
+                  ))
+                  .map((account) => {
+                    const selected = shortcutDraft.cuentaId === account.id;
+                    return (
+                      <button
+                        type="button"
+                        key={account.id}
+                        className={`home-shortcut-account${selected ? " home-shortcut-account--selected" : ""}`}
+                        onClick={() => setShortcutDraft((current) => ({
+                          ...current,
+                          cuentaId: account.id,
+                          cuotas: account.tipoCuenta === "credito" ? current.cuotas || 1 : 1,
+                        }))}
+                        disabled={savingShortcut || shortcutDraft.walletAccountMatched}
+                        aria-pressed={selected}
+                      >
+                        <img src={getAccountCardImage(account)} alt="" />
+                        <span className="home-shortcut-account__details">
+                          <strong>{account.nombre}</strong>
+                          <span>{account.banco} · {account.tipoCuenta === "credito" ? "Crédito" : "Débito"}</span>
+                          {account.namewallet && <small>Wallet: {account.namewallet}</small>}
+                          <small>
+                            {account.tipoCuenta === "credito"
+                              ? `Disponible: $${Number(account.saldo || 0).toLocaleString("es-CO")}`
+                              : `Saldo: $${Number(account.saldo || 0).toLocaleString("es-CO")}`}
+                          </small>
+                        </span>
+                        {selected && <Check size={19} aria-hidden="true" />}
+                      </button>
+                    );
+                  })}
+                <small>
+                  Atajo: {shortcutDraft.tarjeta}
+                </small>
+              </div>
+            </div>
+
+            <div className="home-shortcut-modal__fields">
+              {accounts.find((account) => account.id === shortcutDraft.cuentaId)?.tipoCuenta === "credito" && (
+                <label className="home-shortcut-modal__field">
+                  <span>Cuotas de esta compra</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={2}
+                    value={shortcutDraft.cuotas ?? 1}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (/^\d*$/.test(value)) {
+                        setShortcutDraft((current) => ({
+                          ...current,
+                          cuotas: value,
+                        }));
+                      }
+                    }}
+                    disabled={savingShortcut}
+                  />
+                </label>
+              )}
+              <label className="home-shortcut-modal__field">
+                <span>Establecimiento legal</span>
+                <input type="text" value={shortcutDraft.establecimiento} readOnly />
+              </label>
+              <label className="home-shortcut-modal__field">
+                <span>Nombre para identificarlo</span>
+                <input
+                  type="text"
+                  value={shortcutDraft.nombreEstablecimiento}
+                  onChange={(event) => setShortcutDraft((current) => ({
+                    ...current,
+                    nombreEstablecimiento: event.target.value,
+                  }))}
+                  placeholder="Ej. Supermercado del barrio"
+                  disabled={savingShortcut}
+                />
+              </label>
+              <div className="home-shortcut-modal__location">
+                <MapPin size={17} aria-hidden="true" />
+                <span>
+                  Ubicación · {shortcutDraft.ubicacion.latitud}, {shortcutDraft.ubicacion.longitud}
+                </span>
+              </div>
+              <label className="home-shortcut-modal__field">
+                <span>Fecha y hora</span>
+                <input
+                  type="text"
+                  value={new Date(shortcutDraft.fechaHora).toLocaleString("es-CO")}
+                  readOnly
+                />
+              </label>
+            </div>
+
+            <div className="home-shortcut-modal__tag-section">
+              <div>
+                <h3>Tags</h3>
+                <p>
+                  {suggestedShortcutTags.length > 0
+                    ? "Sugeridos por el historial de este establecimiento e importe."
+                    : "No hay tags anteriores para este establecimiento. Puedes crear los tuyos."}
+                </p>
+              </div>
+              {suggestedShortcutTags.length > 0 && (
+                <div className="home-shortcut-modal__tags">
+                  {suggestedShortcutTags.map((tag) => {
+                    const isSelected = shortcutDraft.tags?.includes(tag);
+                    return (
+                      <button
+                        type="button"
+                        key={tag}
+                        className={`home-shortcut-modal__tag${isSelected ? " home-shortcut-modal__tag--selected" : ""}`}
+                        aria-pressed={Boolean(isSelected)}
+                        onClick={() => setShortcutDraft((current) => ({
+                          ...current,
+                          tags: isSelected
+                            ? (current.tags || []).filter((item) => item !== tag)
+                            : normalizeTagList([...(current.tags || []), tag]),
+                        }))}
+                        disabled={savingShortcut}
+                      >
+                        {tag}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div
+                className="home-shortcut-modal__tag-input"
+                onClick={(event) => event.currentTarget.querySelector("input").focus()}
+              >
+                {(shortcutDraft.tags || []).map((tag) => (
+                  <span className="home-shortcut-modal__tag-chip" key={tag}>
+                    {tag}
+                    <button
+                      type="button"
+                      onClick={() => setShortcutDraft((current) => ({
+                        ...current,
+                        tags: current.tags.filter((item) => item !== tag),
+                      }))}
+                      aria-label={`Eliminar ${tag}`}
+                      disabled={savingShortcut}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <input
+                  type="text"
+                  value={newShortcutTag}
+                  onChange={(event) => setNewShortcutTag(event.target.value.toUpperCase())}
+                  onKeyDown={handleShortcutTagKeyDown}
+                  placeholder={(shortcutDraft.tags || []).length === 0 ? "Ej. comida, café… (espacio para agregar)" : ""}
+                  disabled={savingShortcut}
+                />
+              </div>
+            </div>
+
+            <footer className="home-shortcut-modal__actions">
+              <button
+                type="button"
+                className="home-shortcut-modal__cancel"
+                onClick={() => setShortcutDraft(null)}
+                disabled={savingShortcut}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="home-shortcut-modal__confirm"
+                onClick={handleConfirmShortcut}
+                disabled={savingShortcut || !shortcutDraft.cuentaId}
+              >
+                <Check size={18} aria-hidden="true" />
+                {savingShortcut ? "Guardando..." : "Confirmar movimiento"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      <button
+        type="button"
+        className="home-shortcut-button"
+        onClick={handlePasteShortcut}
+        disabled={readingShortcut || loading}
+        aria-label="Pegar movimiento desde el atajo"
+        title="Pegar movimiento desde el atajo"
+      >
+        <ClipboardPaste size={23} aria-hidden="true" />
+        <span>Pegar movimiento</span>
+      </button>
     </div>
   );
 };

@@ -326,13 +326,13 @@
   font-size: 0.95rem;
 }
 
-.cuentas-list td:nth-child(3),
-.cuentas-list td:nth-child(4) {
+.cuentas-list td:nth-child(4),
+.cuentas-list td:nth-child(5) {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.cuentas-list td:nth-child(8) {
+.cuentas-list td:nth-child(9) {
   white-space: nowrap;
 }
 
@@ -789,11 +789,12 @@
 
   .cuentas-list td:nth-child(1)::before { content: "Banco"; }
   .cuentas-list td:nth-child(2)::before { content: "Nombre"; }
-  .cuentas-list td:nth-child(3)::before { content: "Saldo disponible"; }
-  .cuentas-list td:nth-child(4)::before { content: "Deuda / cupo"; }
-  .cuentas-list td:nth-child(5)::before { content: "Tarjeta"; }
-  .cuentas-list td:nth-child(6)::before { content: "Tipo"; }
-  .cuentas-list td:nth-child(7)::before { content: "Predeterminada"; margin-bottom: 0; }
+  .cuentas-list td:nth-child(3)::before { content: "Nombre en Wallet"; }
+  .cuentas-list td:nth-child(4)::before { content: "Saldo disponible"; }
+  .cuentas-list td:nth-child(5)::before { content: "Deuda / cupo"; }
+  .cuentas-list td:nth-child(6)::before { content: "Tarjeta"; }
+  .cuentas-list td:nth-child(7)::before { content: "Tipo"; }
+  .cuentas-list td:nth-child(8)::before { content: "Predeterminada"; margin-bottom: 0; }
 
   .cuentas-list td:nth-child(1) {
     font-weight: 700;
@@ -806,7 +807,7 @@
   }
 
   /* Predeterminada: etiqueta a la izquierda, botón a la derecha */
-  .cuentas-list td:nth-child(7) {
+  .cuentas-list td:nth-child(8) {
     grid-column: 1 / -1;
     display: flex;
     align-items: center;
@@ -816,13 +817,13 @@
     border-top: 1px solid var(--border-color);
   }
 
-  .cuentas-list td:nth-child(7)::before {
+  .cuentas-list td:nth-child(8)::before {
     font-size: 0.85rem;
     color: var(--text-label);
   }
 
   /* Acciones a todo el ancho */
-  .cuentas-list td:nth-child(8) {
+  .cuentas-list td:nth-child(9) {
     grid-column: 1 / -1;
     display: flex;
     flex-wrap: wrap;

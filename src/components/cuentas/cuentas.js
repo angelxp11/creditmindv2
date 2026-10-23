@@ -19,6 +19,7 @@ import "./cuentas.css";
 const initialForm = {
   banco: "",
   nombre: "",
+  namewallet: "",
   saldo: "",
   limiteCredito: "",
   deudaActual: "",
@@ -147,6 +148,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     event.preventDefault();
     const banco = formValues.banco.trim();
     const nombre = formValues.nombre.trim();
+    const namewallet = formValues.namewallet.trim();
     const tipoCuenta = formValues.tipoCuenta;
     const isCreditAccount = tipoCuenta === "credito";
     const limiteCredito = Number((formValues.limiteCredito || "").replace(/\./g, ""));
@@ -209,6 +211,7 @@ const Cuentas = ({ isOpen, onClose }) => {
         await updateDoc(accountRef, {
           banco,
           nombre,
+          namewallet,
           saldo,
           tipoCuenta,
           ...creditTerms,
@@ -219,7 +222,7 @@ const Cuentas = ({ isOpen, onClose }) => {
         setAccounts((prev) =>
           prev.map((account) =>
             account.id === editingId
-              ? { ...account, banco, nombre, saldo, tipoCuenta, ...creditTerms, imagenTarjeta }
+              ? { ...account, banco, nombre, namewallet, saldo, tipoCuenta, ...creditTerms, imagenTarjeta }
               : account
           )
         );
@@ -228,6 +231,7 @@ const Cuentas = ({ isOpen, onClose }) => {
         const docRef = await addDoc(collection(db, "cuentas"), {
           banco,
           nombre,
+          namewallet,
           saldo,
           tipoCuenta,
           ...creditTerms,
@@ -242,6 +246,7 @@ const Cuentas = ({ isOpen, onClose }) => {
             id: docRef.id,
             banco,
             nombre,
+            namewallet,
             saldo,
             tipoCuenta,
             ...creditTerms,
@@ -268,6 +273,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     setFormValues({
   banco: account.banco,
   nombre: account.nombre,
+  namewallet: account.namewallet || "",
     saldo: account.tipoCuenta === "credito" ? "" : Number(account.saldo || 0).toLocaleString("es-CO"),
     limiteCredito: account.tipoCuenta === "credito" ? Number(account.limiteCredito || account.saldo || 0).toLocaleString("es-CO") : "",
     deudaActual: account.tipoCuenta === "credito" ? Number(account.deudaActual || 0).toLocaleString("es-CO") : "",
@@ -490,6 +496,18 @@ const Cuentas = ({ isOpen, onClose }) => {
             />
           </div>
 
+          <div className="form-group">
+            <label htmlFor="namewallet">Nombre que aparece en Wallet</label>
+            <input
+              id="namewallet"
+              name="namewallet"
+              type="text"
+              value={formValues.namewallet}
+              onChange={handleChange}
+              placeholder="Ej. BANCO · VISA DORADA"
+            />
+          </div>
+
           {formValues.tipoCuenta === "credito" ? (
             <>
               <div className="form-group">
@@ -588,6 +606,7 @@ const Cuentas = ({ isOpen, onClose }) => {
                 <tr>
                   <th>Banco</th>
                   <th>Nombre</th>
+                  <th>Nombre en Wallet</th>
                   <th>Saldo disponible</th>
                   <th>Deuda / cupo</th>
                   <th>Tarjeta</th>
@@ -601,6 +620,7 @@ const Cuentas = ({ isOpen, onClose }) => {
                   <tr key={account.id}>
                     <td>{account.banco}</td>
                     <td>{account.nombre}</td>
+                    <td>{account.namewallet || "—"}</td>
                     <td>${Number(account.saldo || 0).toLocaleString("es-CO")}</td>
                     <td>{account.tipoCuenta === "credito"
                       ? `$${Number(account.deudaActual || 0).toLocaleString("es-CO")} / $${Number(account.limiteCredito || 0).toLocaleString("es-CO")}`

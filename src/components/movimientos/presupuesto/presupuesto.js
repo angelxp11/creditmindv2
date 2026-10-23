@@ -79,6 +79,7 @@ const movementMatchesBudget = (budget, movement, extraTags = []) => {
     budget.categoriaGlobal,
     budget.categoriaNombre,
     budget.establecimiento,
+    budget.nombreLegal,
     ...(Array.isArray(budget.tags) ? budget.tags : []),
     ...extraTags,
   ].map((value) => String(value ?? "").trim().toUpperCase());
@@ -107,6 +108,7 @@ const Presupuesto = ({ isOpen, onClose }) => {
   const [budgetForm, setBudgetForm] = useState({
     categoriaId: "",
     valor: "",
+    nombreLegal: "",
     fechaInicio: "",
     fechaFin: "",
     nota: "",
@@ -373,6 +375,7 @@ const Presupuesto = ({ isOpen, onClose }) => {
     setBudgetForm({
       categoriaId: "",
       valor: "",
+      nombreLegal: "",
       fechaInicio: today,
       fechaFin: today,
       nota: "",
@@ -630,6 +633,7 @@ const Presupuesto = ({ isOpen, onClose }) => {
         categoriaNombre: categoriaGlobalNombre || categoriaSeleccionada?.nombre || "",
         valor,
         establecimiento: categoriaGlobalNombre || categoriaSeleccionada?.nombre || "",
+        nombreLegal: budgetForm.nombreLegal.trim().toUpperCase(),
         tags: normalizeTags(categoriaSeleccionada?.tags || []),
         fechaInicio: budgetForm.fechaInicio,
         fechaFin: budgetForm.fechaFin,
@@ -861,6 +865,18 @@ const Presupuesto = ({ isOpen, onClose }) => {
               </label>
 
               <label className="presupuesto-field">
+                <span>Nombre legal del establecimiento</span>
+                <input
+                  className="presupuesto-input"
+                  name="nombreLegal"
+                  type="text"
+                  value={budgetForm.nombreLegal}
+                  onChange={handleBudgetFormChange}
+                  placeholder="Nombre como aparece en las transacciones (opcional)"
+                />
+              </label>
+
+              <label className="presupuesto-field">
                 <span>Fecha de inicio</span>
                 <input
                   className="presupuesto-input"
@@ -921,6 +937,9 @@ const Presupuesto = ({ isOpen, onClose }) => {
                     <article key={budget.id} className="presupuesto-budget">
                       <div className="presupuesto-budget__main">
                         <strong>{budget.establecimiento || budget.categoriaGlobal || "Presupuesto"}</strong>
+                        {budget.nombreLegal && (
+                          <span>Nombre legal: {budget.nombreLegal}</span>
+                        )}
                         <span>
                           ${formatMoney(budget.valor)} · {String(budget.cuentaNombre || "Cuenta").toUpperCase()} · {formatDateRangeLabel(budget.fechaInicio, budget.fechaFin)}
                         </span>

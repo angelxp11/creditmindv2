@@ -28,6 +28,7 @@ const initialForm = {
 
 const initialBudget = {
   fechaProgramada: "",
+  nombreLegal: "",
 };
 
 const getObligationMonth = (date) => {
@@ -128,7 +129,6 @@ const Movimientos = ({ isOpen, onClose }) => {
         } else if (spendableAccounts[0]) {
           setSelectedCuentaId(spendableAccounts[0].id);
         }
-
         const budgetsSnapshot = await getDocs(
           query(collection(db, "presupuestos"), where("usuarioId", "==", user.uid))
         );
@@ -428,6 +428,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         establecimiento,
         tags: finalTags,
         fechaProgramada: budgetForm.fechaProgramada,
+        nombreLegal: budgetForm.nombreLegal.trim().toUpperCase(),
         estado: "pendiente",
         fechaCreacion: serverTimestamp(),
       };
@@ -467,7 +468,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         cuentaBanco: cuentaSeleccionada.banco,
         cuentaNombre: cuentaSeleccionada.nombre,
         valor: Number(budget.valor),
-        establecimiento: budget.establecimiento,
+        establecimiento: budget.nombreLegal || budget.establecimiento,
         tags: budget.tags || [],
         fechaHora: new Date(),
         fechaCreacion: serverTimestamp(),
@@ -1517,7 +1518,7 @@ const Movimientos = ({ isOpen, onClose }) => {
 
   return (
     <div className="mov-page">
-      {loading && <Loading message="Registrando pago..." />}
+      {loading && <Loading message="Procesando movimiento..." />}
       <div className="mov-panel">
 
         {/* HEADER */}
@@ -1721,7 +1722,24 @@ const Movimientos = ({ isOpen, onClose }) => {
                 type="date"
                 min={new Date().toISOString().slice(0, 10)}
                 value={budgetForm.fechaProgramada}
-                onChange={(event) => setBudgetForm({ fechaProgramada: event.target.value })}
+                onChange={(event) => setBudgetForm((prev) => ({ ...prev, fechaProgramada: event.target.value }))}
+              />
+            </div>
+          )}
+
+          {mode === "presupuesto" && (
+            <div className="mov-field mov-field--full">
+              <label className="mov-label" htmlFor="nombreLegal">Nombre legal del establecimiento</label>
+              <input
+                id="nombreLegal"
+                className="mov-input"
+                type="text"
+                value={budgetForm.nombreLegal}
+                onChange={(event) => setBudgetForm((prev) => ({
+                  ...prev,
+                  nombreLegal: event.target.value.toUpperCase(),
+                }))}
+                placeholder="Nombre como aparece en las transacciones (opcional)"
               />
             </div>
           )}
@@ -1835,6 +1853,7 @@ const Movimientos = ({ isOpen, onClose }) => {
                 <article className="mov-budget" key={budget.id}>
                   <div>
                     <strong>{budget.establecimiento}</strong>
+                    {budget.nombreLegal && <span>Nombre legal: {budget.nombreLegal}</span>}
                     <span>
                       ${formatMoney(budget.valor)} · {budget.cuentaNombre} · {budget.fechaProgramada}
                     </span>

@@ -269,10 +269,10 @@ const VerMovimientos = ({ isOpen, onClose }) => {
   const availableConcepts = React.useMemo(() => {
     const concepts = new Map();
     allMovements.forEach((movimiento) => {
-      const concept = String(
-        movimiento.establecimiento || movimiento.descripcion || ""
-      ).trim();
-      if (concept) concepts.set(concept.toLowerCase(), concept);
+      [movimiento.nombreEstablecimiento, movimiento.establecimiento || movimiento.descripcion]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .forEach((concept) => concepts.set(concept.toLowerCase(), concept));
     });
     return [...concepts.values()].sort((a, b) => a.localeCompare(b, "es"));
   }, [allMovements]);
@@ -293,8 +293,8 @@ const VerMovimientos = ({ isOpen, onClose }) => {
           )
         )) &&
         (selectedConcepts.length === 0 || selectedConcepts.includes(
-          String(m.establecimiento || m.descripcion || "").trim()
-        ))
+          String(m.nombreEstablecimiento || m.establecimiento || m.descripcion || "").trim()
+        ) || selectedConcepts.includes(String(m.establecimiento || m.descripcion || "").trim()))
     );
   }, [allMovements, filterPeriod, filterType, selectedTags, selectedConcepts, selectedCuentaId]);
 
@@ -820,7 +820,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                         )}
                       </td>
                       <td>
-                        {m.establecimiento || (m.tipo === "transferencia"
+                        {m.nombreEstablecimiento || m.establecimiento || (m.tipo === "transferencia"
                           ? m.tipoTransferencia === "externa"
                             ? `${m.descripcion || "TRANSFERENCIA"} · Para: ${m.destinatarioNombre}`
                             : `${m.descripcion || "TRANSFERENCIA"} · ${m.cuentaDestinoBanco || ""} ${m.cuentaDestinoNombre || ""}`.trim()
@@ -842,7 +842,7 @@ const VerMovimientos = ({ isOpen, onClose }) => {
                               : m.tipo === "credito_avance"
                               ? `Avance${m.cuotas ? ` · ${m.cuotas} cuotas` : ""}`
                               : m.tipo === "credito_compra"
-                              ? "Compra tarjeta"
+                              ? `Compra tarjeta${m.cuotas ? ` · ${m.cuotas} ${Number(m.cuotas) === 1 ? "cuota" : "cuotas"}` : ""}`
                               : "Egreso"}
                           </span>
                         )}
