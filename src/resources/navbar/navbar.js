@@ -15,6 +15,7 @@ const IconPay      = () => <svg viewBox="0 0 24 24" strokeWidth="2"><rect x="2" 
 const IconObligation = () => <svg viewBox="0 0 24 24" strokeWidth="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18M8 14l2.5 2.5L16 12"/></svg>;
 const IconBudget   = () => <svg viewBox="0 0 24 24" strokeWidth="2"><path d="M4 19V5h16v14"/><path d="M8 9h8M8 13h8M8 17h5"/><path d="M4 10h16"/></svg>;
 const IconList     = () => <svg viewBox="0 0 24 24" strokeWidth="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>;
+const IconPlace    = () => <svg viewBox="0 0 24 24" strokeWidth="2"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>;
 const IconSettings = () => <svg viewBox="0 0 24 24" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>;
 const IconLogout   = () => <svg viewBox="0 0 24 24" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>;
 const IconAdmin    = () => <svg viewBox="0 0 24 24" strokeWidth="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>;
@@ -38,7 +39,7 @@ const MobileBtn = ({ icon, label, onClick, className = "" }) => (
 );
 
 /* ── Componente principal ──────────────────────── */
-const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOpenPresupuesto, onOpenVerMovimientos, onOpenIngresos, onOpenTransferencia, onOpenObligaciones, onGoHome }) => {
+const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOpenPresupuesto, onOpenVerMovimientos, onOpenIngresos, onOpenTransferencia, onOpenObligaciones, onOpenLugares, onGoHome }) => {
   const [open, setOpen]           = useState(false);
   const [showNavbar, setShowNavbar] = useState(true);
   const [showConfig, setShowConfig] = useState(false);
@@ -109,6 +110,7 @@ const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOp
           <NavBtn icon={<IconPay />}    label="Ingresos"        onClick={() => { close(); onOpenIngresos && onOpenIngresos(); }} />
           <NavBtn icon={<IconPay />}    label="Transferir"     onClick={() => { close(); onOpenTransferencia && onOpenTransferencia(); }} />
           <NavBtn icon={<IconList />}   label="Movimientos"     onClick={() => { close(); onOpenVerMovimientos(); }} />
+          <NavBtn icon={<IconPlace />} label="Lugar" onClick={() => { close(); onOpenLugares && onOpenLugares(); }} />
           {isAdmin && (
             <NavBtn icon={<IconAdmin />} label="Solicitudes" onClick={handleAdmin} className="nav-btn--admin" />
           )}
@@ -156,6 +158,7 @@ const Navbar = ({ onLogout, onOpenCuentas, onOpenDeudas, onOpenMovimientos, onOp
           <MobileBtn icon={<IconPay />}    label="Ingresos"         onClick={() => { close(); onOpenIngresos && onOpenIngresos(); }} />
           <MobileBtn icon={<IconPay />}    label="Transferir"       onClick={() => { close(); onOpenTransferencia && onOpenTransferencia(); }} />
           <MobileBtn icon={<IconList />}   label="Ver movimientos"  onClick={() => { close(); onOpenVerMovimientos(); }} />
+          <MobileBtn icon={<IconPlace />} label="Lugar" onClick={() => { close(); onOpenLugares && onOpenLugares(); }} />
           {isAdmin && (
             <MobileBtn icon={<IconAdmin />} label="Solicitudes (Admin)" onClick={handleAdmin} className="nav-mobile-btn--admin" />
           )}

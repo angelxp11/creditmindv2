@@ -4,20 +4,27 @@ import { auth, db } from "../../server/api";
 import {
   collection,
   addDoc,
+  getDoc,
   serverTimestamp,
   query,
   where,
-  getDocs,
   doc,
+  getDocs,
   updateDoc,
   runTransaction,
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
-import { formatObligationDate, formatObligationSchedule, getLocalDateString, getNextDueDate } from "./obligaciones/obligationUtils";
+import { formatObligationDate, formatObligationSchedule, getLocalDateString, getNextDueDate, isObligationDue } from "./obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
-import { applyCreditAdvance, applyCreditPayment, applyCreditPurchase, getCreditStatementDates, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
+import { addCreditInstallmentToStatement, applyCreditAdvance, applyCreditPayment, applyCreditPurchase, getCreditInstallmentAmounts, getCreditInstallmentSchedule, getCreditStatementDates, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
 import { getSimilarMovements } from "./tagSuggestionUtils";
+import {
+  getDefaultCreditInstallments,
+  getIdentifiedMovementHistory,
+  getIdentifiedMovementNames,
+  getShortcutTagSuggestions,
+} from "../home/shortcutUtils";
 import "./movimientos.css";
 
 const initialForm = {
@@ -84,8 +91,13 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [accounts, setAccounts] = useState([]);
   const [selectedCuentaId, setSelectedCuentaId] = useState("");
   const [historial, setHistorial] = useState([]);
+  const [savedPlaces, setSavedPlaces] = useState([]);
   const [sugerencia, setSugerencia] = useState(null);
   const [selectedSuggestionTags, setSelectedSuggestionTags] = useState([]);
+  const [selectedIdentifiedName, setSelectedIdentifiedName] = useState("");
+  const [newPlaceName, setNewPlaceName] = useState("");
+  const [installmentInput, setInstallmentInput] = useState("");
+  const [installmentInputTouched, setInstallmentInputTouched] = useState(false);
   const [mode, setMode] = useState("pago");
   const [usePreviousDate, setUsePreviousDate] = useState(false);
   const [budgetForm, setBudgetForm] = useState(initialBudget);
@@ -95,6 +107,7 @@ const Movimientos = ({ isOpen, onClose }) => {
   const [obligationPaymentAccounts, setObligationPaymentAccounts] = useState({});
   const [obligationPaymentModal, setObligationPaymentModal] = useState(null);
   const [selectedObligationPaymentAccountId, setSelectedObligationPaymentAccountId] = useState("");
+  const [keepObligationDate, setKeepObligationDate] = useState(true);
   const [recurringIncomes, setRecurringIncomes] = useState([]);
   const [recurringIncomeAmounts, setRecurringIncomeAmounts] = useState({});
 
@@ -184,16 +197,22 @@ const Movimientos = ({ isOpen, onClose }) => {
         ));
 
         // Cargar historial de movimientos
-        const movimientosQuery = query(
-          collection(db, "movimientos"),
-          where("userId", "==", user.uid)
-        );
-        const movimientosSnapshot = await getDocs(movimientosQuery);
-        const historialMovimientos = movimientosSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const [userMovementsSnapshot, usuarioMovementsSnapshot, userSnapshot] = await Promise.all([
+          getDocs(query(collection(db, "movimientos"), where("userId", "==", user.uid))),
+          getDocs(query(collection(db, "movimientos"), where("usuarioId", "==", user.uid))),
+          getDoc(doc(db, "usuarios", user.uid)),
+        ]);
+        const movementsById = new Map();
+        [...userMovementsSnapshot.docs, ...usuarioMovementsSnapshot.docs].forEach((movementDoc) => {
+          movementsById.set(movementDoc.id, {
+            id: movementDoc.id,
+            ...movementDoc.data(),
+          });
+        });
+        const historialMovimientos = [...movementsById.values()];
         setHistorial(historialMovimientos);
+        const places = userSnapshot.data()?.lugares;
+        setSavedPlaces(Array.isArray(places) ? places : []);
       } catch (error) {
         console.error("Error cargando cuentas:", error);
         showToast("No se pudieron cargar las cuentas", "error");
@@ -208,6 +227,10 @@ const Movimientos = ({ isOpen, onClose }) => {
       setTagInput("");
       setSugerencia(null);
       setSelectedSuggestionTags([]);
+      setSelectedIdentifiedName("");
+      setNewPlaceName("");
+      setInstallmentInput("");
+      setInstallmentInputTouched(false);
       setSelectedCuentaId("");
       setMode("pago");
       setUsePreviousDate(false);
@@ -242,42 +265,39 @@ const Movimientos = ({ isOpen, onClose }) => {
   );
   const pendingObligations = obligations.filter((obligation) => {
     if (!obligation.activa || obligation.anulada) return false;
-    if (obligation.tipo === "pago_tarjeta") return true;
+    if (obligation.tipo === "pago_tarjeta") {
+      return isObligationDue(obligation.fechaProximoPago, `${currentMonth}-31`);
+    }
     const paidThisMonth = wasObligationPaidThisMonth(obligation, currentMonth);
     const nextDueMonth = getObligationMonth(obligation.fechaProximoPago);
     return !paidThisMonth || nextDueMonth <= currentMonth;
   });
 
   /* ── Función para obtener sugerencias ── */
-  const obtenerSugerencia = (establecimiento, valor) => {
-    if (!establecimiento || !valor) {
+  const obtenerSugerencia = (establecimiento, valor, selectedName = "") => {
+    const query = String(establecimiento || "").trim();
+    const matchingNames = getIdentifiedMovementNames(historial, query, savedPlaces);
+    const identifiedName = selectedName && matchingNames.includes(selectedName)
+      ? selectedName
+      : matchingNames.length === 1
+        ? matchingNames[0]
+        : "";
+    if (!identifiedName) {
       setSugerencia(null);
       setSelectedSuggestionTags([]);
       return;
     }
-
-    const similares = getSimilarMovements(historial, establecimiento, valor);
-
-    if (similares.length === 0) {
-      setSugerencia(null);
-      setSelectedSuggestionTags([]);
-      return;
-    }
-
-    const frecuenciaTags = {};
-    similares.forEach((m) => {
-      (m.tags || []).forEach((tag) => {
-        frecuenciaTags[tag] = (frecuenciaTags[tag] || 0) + 1;
-      });
-    });
-
-    const tagsOrdenados = Object.entries(frecuenciaTags)
-      .sort((a, b) => b[1] - a[1])
-      .map((item) => item[0]);
+    const identifiedHistory = getIdentifiedMovementHistory(historial, savedPlaces);
+    const matchingTags = getShortcutTagSuggestions(
+      identifiedHistory,
+      identifiedName,
+      valor
+    );
+    const similares = getSimilarMovements(identifiedHistory, identifiedName, valor);
 
     setSugerencia({
-      establecimiento: similares[0].establecimiento.toUpperCase(),
-      tags: tagsOrdenados,
+      establecimiento: (similares[0]?.nombreEstablecimiento || identifiedName).toUpperCase(),
+      tags: matchingTags,
       confianza: Math.min(
         99,
         Math.round((similares.length / historial.length) * 300)
@@ -296,7 +316,7 @@ const Movimientos = ({ isOpen, onClose }) => {
           ...prev,
           valor: valorFormateado,
         };
-        obtenerSugerencia(nuevo.establecimiento, nuevo.valor);
+        obtenerSugerencia(nuevo.establecimiento, nuevo.valor, selectedIdentifiedName);
         return nuevo;
       });
       return;
@@ -304,6 +324,8 @@ const Movimientos = ({ isOpen, onClose }) => {
 
     if (name === "establecimiento") {
       const mayuscula = value.toUpperCase();
+      setSelectedIdentifiedName("");
+      setNewPlaceName(mayuscula);
       setFormValues((prev) => {
         const nuevo = {
           ...prev,
@@ -357,7 +379,18 @@ const Movimientos = ({ isOpen, onClose }) => {
     const selectedAccount = spendableAccounts.find((account) => account.id === suggestedAccountId)
       || defaultSpendableAccount;
     setSelectedObligationPaymentAccountId(selectedAccount?.id || "");
+    setKeepObligationDate(true);
     setObligationPaymentModal(obligation);
+  };
+
+  const payFullCardStatement = (obligation) => {
+    setObligationPaymentAmounts((current) => ({
+      ...current,
+      [obligation.id]: formatMoneyInput(String(
+        Number(obligation.montoPendiente ?? obligation.valor ?? 0)
+      )),
+    }));
+    openObligationPaymentModal(obligation);
   };
 
   const confirmObligationPayment = async () => {
@@ -366,7 +399,8 @@ const Movimientos = ({ isOpen, onClose }) => {
     await handlePayObligation(
       obligation,
       Number((obligationPaymentAmounts[obligation.id] || "").replace(/\./g, "")),
-      selectedObligationPaymentAccountId
+      selectedObligationPaymentAccountId,
+      !keepObligationDate
     );
   };
 
@@ -376,6 +410,10 @@ const Movimientos = ({ isOpen, onClose }) => {
     setTagInput("");
     setSugerencia(null);
     setSelectedSuggestionTags([]);
+    setSelectedIdentifiedName("");
+    setNewPlaceName("");
+    setInstallmentInput("");
+    setInstallmentInputTouched(false);
     setUsePreviousDate(false);
     setBudgetForm(initialBudget);
   };
@@ -490,7 +528,12 @@ const Movimientos = ({ isOpen, onClose }) => {
     }
   };
 
-  const handlePayObligationWithCredit = async (obligation, amount, paymentAccount) => {
+  const handlePayObligationWithCredit = async (
+    obligation,
+    amount,
+    paymentAccount,
+    adjustScheduleToPaymentDate = false
+  ) => {
     const user = auth.currentUser;
     if (!user) {
       showToast("Necesitas iniciar sesión", "error");
@@ -536,6 +579,12 @@ const Movimientos = ({ isOpen, onClose }) => {
           if (debt.usuarioId !== user.uid || debt.obligacionId !== obligation.id) {
             throw new Error("DEBT_UNAVAILABLE");
           }
+          if (debt.origen === "compra_tarjeta" && Array.isArray(debt.valoresCuota)) {
+            const installmentIndex = Number(currentObligation.proximoPagoNumero || 1) - 1;
+            if (amount !== Number(debt.valoresCuota[installmentIndex])) {
+              throw new Error("CREDIT_INSTALLMENT_AMOUNT_MISMATCH");
+            }
+          }
           remainingDebt = Number(debt.montoRestante ?? debt.monto ?? 0);
           if (remainingDebt <= 0) throw new Error("DEBT_ALREADY_PAID");
           if (amount > remainingDebt) throw new Error("PAYMENT_EXCEEDS_DEBT");
@@ -543,16 +592,30 @@ const Movimientos = ({ isOpen, onClose }) => {
           debtPaid = remainingDebt <= 0;
         }
 
+        const rebaseMonthlySchedule = adjustScheduleToPaymentDate &&
+          currentObligation.tipo !== "pago_tarjeta";
+        const paymentDateString = getLocalDateString(paymentDate);
+        const nextDueDay = rebaseMonthlySchedule
+          ? paymentDate.getDate()
+          : currentObligation.diaVencimiento;
         const nextDueDate = debtPaid ? null : getNextDueDate(
-          currentObligation.frecuencia,
-          currentObligation.fechaProximoPago,
-          currentObligation.diaVencimiento,
-          currentObligation.diaSegundoPago,
+          rebaseMonthlySchedule ? "mensual" : currentObligation.frecuencia,
+          rebaseMonthlySchedule ? paymentDateString : currentObligation.fechaProximoPago,
+          nextDueDay,
+          rebaseMonthlySchedule ? null : currentObligation.diaSegundoPago,
           currentObligation.proximoPagoNumero || 1
         );
-        const nextPaymentNumber = currentObligation.frecuencia === "quincenal"
-          ? (currentObligation.proximoPagoNumero || 1) === 1 ? 2 : 1
-          : 1;
+        const nextPaymentNumber = debtRef && Array.isArray(currentObligation.valoresCuota)
+          ? Number(currentObligation.proximoPagoNumero || 1) + 1
+          : !rebaseMonthlySchedule && currentObligation.frecuencia === "quincenal"
+            ? (currentObligation.proximoPagoNumero || 1) === 1 ? 2 : 1
+            : 1;
+        const nextInstallmentAmount = debtRef && Array.isArray(currentObligation.valoresCuota)
+          ? currentObligation.valoresCuota[Math.min(
+            nextPaymentNumber - 1,
+            currentObligation.valoresCuota.length - 1
+          )]
+          : null;
         const creditChanges = applyCreditPurchase(account, amount);
         const statementDates = getCreditStatementForPurchase(account, paymentDate);
         if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
@@ -604,7 +667,13 @@ const Movimientos = ({ isOpen, onClose }) => {
           fechaUltimoPago: serverTimestamp(),
           ...(nextDueDate ? {
             fechaProximoPago: nextDueDate,
+            ...(rebaseMonthlySchedule ? {
+              frecuencia: "mensual",
+              diaVencimiento: nextDueDay,
+              diaSegundoPago: null,
+            } : {}),
             proximoPagoNumero: nextPaymentNumber,
+            ...(nextInstallmentAmount ? { valor: nextInstallmentAmount } : {}),
           } : {}),
           ...(debtRef ? {
             deudaRestante: remainingDebt,
@@ -615,6 +684,14 @@ const Movimientos = ({ isOpen, onClose }) => {
           transaction.update(debtRef, {
             montoRestante: remainingDebt,
             pagada: debtPaid,
+            ...(nextDueDate ? {
+              proximaFechaPago: nextDueDate,
+              ...(rebaseMonthlySchedule ? {
+                frecuencia: "mensual",
+                diaVencimiento: nextDueDay,
+                diaSegundoPago: null,
+              } : {}),
+            } : {}),
             ultimaActualizacion: serverTimestamp(),
           });
         }
@@ -636,6 +713,7 @@ const Movimientos = ({ isOpen, onClose }) => {
           origen: "tarjeta_credito",
           obligacionId: statementId,
           obligacionPagadaId: obligation.id,
+          ...(debtRef ? { deudaId: currentObligation.deudaId } : {}),
           fechaCorteTarjeta: cutoffDate,
           fechaLimitePagoTarjeta: statementPaymentDate,
           fechaHora: paymentDate,
@@ -646,7 +724,10 @@ const Movimientos = ({ isOpen, onClose }) => {
           accountBalance: creditChanges.saldo,
           accountDebt: creditChanges.deudaActual,
           nextDueDate,
+          nextDueDay,
+          rebaseMonthlySchedule,
           nextPaymentNumber,
+          nextInstallmentAmount,
           remainingDebt,
           debtPaid,
           paidPeriod: currentObligation.fechaProximoPago,
@@ -665,7 +746,13 @@ const Movimientos = ({ isOpen, onClose }) => {
             fechaUltimoPago: paymentDate,
             fechaUltimoPeriodoPagado: payment.paidPeriod,
             ...(payment.nextDueDate ? { fechaProximoPago: payment.nextDueDate } : {}),
+            ...(payment.rebaseMonthlySchedule ? {
+              frecuencia: "mensual",
+              diaVencimiento: payment.nextDueDay,
+              diaSegundoPago: null,
+            } : {}),
             proximoPagoNumero: payment.nextPaymentNumber,
+            ...(payment.nextInstallmentAmount ? { valor: payment.nextInstallmentAmount } : {}),
             ...(obligation.deudaId ? { deudaRestante: payment.remainingDebt } : {}),
           }
           : item),
@@ -678,7 +765,10 @@ const Movimientos = ({ isOpen, onClose }) => {
       } else if (obligation.deudaId) {
         setObligationPaymentAmounts((current) => ({
           ...current,
-          [obligation.id]: formatMoneyInput(String(Math.min(Number(obligation.valor || 0), payment.remainingDebt))),
+          [obligation.id]: formatMoneyInput(String(Math.min(
+            Number(payment.nextInstallmentAmount || obligation.valor || 0),
+            payment.remainingDebt
+          ))),
         }));
       }
       setObligationPaymentAmounts((current) => ({
@@ -691,12 +781,16 @@ const Movimientos = ({ isOpen, onClose }) => {
       console.error("Error pagando obligación con tarjeta:", error);
       if (error.message === "CREDIT_LIMIT_EXCEEDED") {
         showToast("La obligación supera el cupo disponible de la tarjeta", "error");
+      } else if (error.message === "CREDIT_USAGE_LIMIT_EXCEEDED") {
+        showToast("La obligación supera el límite de uso configurado para la tarjeta", "error");
       } else if (error.message === "CREDIT_STATEMENT_DATES_UNAVAILABLE") {
         showToast("Configura las fechas de corte y pago de la tarjeta", "error");
       } else if (error.message === "CREDIT_OBLIGATION_CONFLICT") {
         showToast("No se pudo asociar el pago al extracto de esta tarjeta", "error");
       } else if (error.message === "PAYMENT_EXCEEDS_DEBT") {
         showToast("El pago no puede superar el saldo pendiente de la deuda", "error");
+      } else if (error.message === "CREDIT_INSTALLMENT_AMOUNT_MISMATCH") {
+        showToast("Para esta compra debes pagar el valor exacto de la cuota mensual", "error");
       } else if (error.message === "DEBT_UNAVAILABLE" || error.message === "DEBT_ALREADY_PAID") {
         showToast("La deuda asociada ya no está pendiente", "error");
       } else if (error.message === "OBLIGATION_UNAVAILABLE") {
@@ -709,9 +803,18 @@ const Movimientos = ({ isOpen, onClose }) => {
     }
   };
 
-  const handlePayObligation = async (obligation, amount, paymentAccountId) => {
+  const handlePayObligation = async (
+    obligation,
+    amount,
+    paymentAccountId,
+    adjustScheduleToPaymentDate = false
+  ) => {
     if (obligation.tipo === "pago_tarjeta") {
       await handlePayCreditObligation(obligation, amount, paymentAccountId);
+      return;
+    }
+    if (obligation.deudaId && obligation.cuotas) {
+      showToast("Esta cuota se actualiza al pagar el extracto de la tarjeta", "info");
       return;
     }
 
@@ -731,7 +834,12 @@ const Movimientos = ({ isOpen, onClose }) => {
       return;
     }
     if (paymentAccount.tipoCuenta === "credito") {
-      await handlePayObligationWithCredit(obligation, amount, paymentAccount);
+      await handlePayObligationWithCredit(
+        obligation,
+        amount,
+        paymentAccount,
+        adjustScheduleToPaymentDate
+      );
       return;
     }
 
@@ -777,6 +885,12 @@ const Movimientos = ({ isOpen, onClose }) => {
           if (debt.usuarioId !== user.uid || debt.obligacionId !== obligation.id) {
             throw new Error("DEBT_UNAVAILABLE");
           }
+          if (debt.origen === "compra_tarjeta" && Array.isArray(debt.valoresCuota)) {
+            const installmentIndex = Number(currentObligation.proximoPagoNumero || 1) - 1;
+            if (amount !== Number(debt.valoresCuota[installmentIndex])) {
+              throw new Error("CREDIT_INSTALLMENT_AMOUNT_MISMATCH");
+            }
+          }
           remainingDebt = Number(debt.montoRestante ?? debt.monto ?? 0);
           if (remainingDebt <= 0) throw new Error("DEBT_ALREADY_PAID");
           if (amount > remainingDebt) throw new Error("PAYMENT_EXCEEDS_DEBT");
@@ -784,16 +898,30 @@ const Movimientos = ({ isOpen, onClose }) => {
           debtPaid = remainingDebt <= 0;
         }
 
+        const rebaseMonthlySchedule = adjustScheduleToPaymentDate &&
+          currentObligation.tipo !== "pago_tarjeta";
+        const paymentDateString = getLocalDateString(paymentDate);
+        const nextDueDay = rebaseMonthlySchedule
+          ? paymentDate.getDate()
+          : currentObligation.diaVencimiento;
         const nextDueDate = debtPaid ? null : getNextDueDate(
-          currentObligation.frecuencia,
-          currentObligation.fechaProximoPago,
-          currentObligation.diaVencimiento,
-          currentObligation.diaSegundoPago,
+          rebaseMonthlySchedule ? "mensual" : currentObligation.frecuencia,
+          rebaseMonthlySchedule ? paymentDateString : currentObligation.fechaProximoPago,
+          nextDueDay,
+          rebaseMonthlySchedule ? null : currentObligation.diaSegundoPago,
           currentObligation.proximoPagoNumero || 1
         );
-        const nextPaymentNumber = currentObligation.frecuencia === "quincenal"
-          ? (currentObligation.proximoPagoNumero || 1) === 1 ? 2 : 1
-          : 1;
+        const nextPaymentNumber = debtRef && Array.isArray(currentObligation.valoresCuota)
+          ? Number(currentObligation.proximoPagoNumero || 1) + 1
+          : !rebaseMonthlySchedule && currentObligation.frecuencia === "quincenal"
+            ? (currentObligation.proximoPagoNumero || 1) === 1 ? 2 : 1
+            : 1;
+        const nextInstallmentAmount = debtRef && Array.isArray(currentObligation.valoresCuota)
+          ? currentObligation.valoresCuota[Math.min(
+            nextPaymentNumber - 1,
+            currentObligation.valoresCuota.length - 1
+          )]
+          : null;
         transaction.update(accountRef, {
           saldo: balance - amount,
           ultimaActualizacion: serverTimestamp(),
@@ -803,7 +931,13 @@ const Movimientos = ({ isOpen, onClose }) => {
           fechaUltimoPago: serverTimestamp(),
           ...(nextDueDate ? {
             fechaProximoPago: nextDueDate,
+            ...(rebaseMonthlySchedule ? {
+              frecuencia: "mensual",
+              diaVencimiento: nextDueDay,
+              diaSegundoPago: null,
+            } : {}),
             proximoPagoNumero: nextPaymentNumber,
+            ...(nextInstallmentAmount ? { valor: nextInstallmentAmount } : {}),
           } : {}),
           ...(debtRef ? {
             deudaRestante: remainingDebt,
@@ -814,6 +948,14 @@ const Movimientos = ({ isOpen, onClose }) => {
           transaction.update(debtRef, {
             montoRestante: remainingDebt,
             pagada: debtPaid,
+            ...(nextDueDate ? {
+              proximaFechaPago: nextDueDate,
+              ...(rebaseMonthlySchedule ? {
+                frecuencia: "mensual",
+                diaVencimiento: nextDueDay,
+                diaSegundoPago: null,
+              } : {}),
+            } : {}),
             ultimaActualizacion: serverTimestamp(),
           });
         }
@@ -836,7 +978,10 @@ const Movimientos = ({ isOpen, onClose }) => {
         return {
           balance: balance - amount,
           nextDueDate,
+          nextDueDay,
+          rebaseMonthlySchedule,
           nextPaymentNumber,
+          nextInstallmentAmount,
           remainingDebt,
           debtPaid,
           debtId: currentObligation.deudaId || null,
@@ -869,14 +1014,23 @@ const Movimientos = ({ isOpen, onClose }) => {
             fechaUltimoPago: payment.paidAt,
             fechaUltimoPeriodoPagado: payment.paidPeriod,
             ...(payment.nextDueDate ? { fechaProximoPago: payment.nextDueDate } : {}),
+            ...(payment.rebaseMonthlySchedule ? {
+              frecuencia: "mensual",
+              diaVencimiento: payment.nextDueDay,
+              diaSegundoPago: null,
+            } : {}),
             proximoPagoNumero: payment.nextPaymentNumber,
+            ...(payment.nextInstallmentAmount ? { valor: payment.nextInstallmentAmount } : {}),
             ...(obligation.deudaId ? { deudaRestante: payment.remainingDebt } : {}),
           }
           : item).sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
         if (obligation.deudaId) {
           setObligationPaymentAmounts((current) => ({
             ...current,
-            [obligation.id]: formatMoneyInput(String(Math.min(Number(obligation.valor || 0), payment.remainingDebt))),
+            [obligation.id]: formatMoneyInput(String(Math.min(
+              Number(payment.nextInstallmentAmount || obligation.valor || 0),
+              payment.remainingDebt
+            ))),
           }));
         }
         showToast(`Obligación cubierta. Próximo pago: ${formatObligationDate(payment.nextDueDate)}`, "success");
@@ -887,6 +1041,8 @@ const Movimientos = ({ isOpen, onClose }) => {
         showToast("Saldo insuficiente para pagar esta obligación", "error");
       } else if (error.message === "PAYMENT_EXCEEDS_DEBT") {
         showToast("El pago no puede superar el saldo pendiente de la deuda", "error");
+      } else if (error.message === "CREDIT_INSTALLMENT_AMOUNT_MISMATCH") {
+        showToast("Para esta compra debes pagar el valor exacto de la cuota mensual", "error");
       } else if (error.message === "DEBT_UNAVAILABLE" || error.message === "DEBT_ALREADY_PAID") {
         showToast("La deuda asociada ya no está pendiente", "error");
       } else if (error.message === "OBLIGATION_UNAVAILABLE") {
@@ -950,6 +1106,105 @@ const Movimientos = ({ isOpen, onClose }) => {
         const creditChanges = applyCreditPayment(cardAccount, amount);
         const remaining = statementRemaining - amount;
         const paid = remaining <= 0;
+        const linkedInstallments = paid
+          ? (currentObligation.cuotasCompra || []).filter((installment) =>
+            installment.deudaId && installment.obligacionId && !installment.pagada
+          )
+          : [];
+        const linkedInstallmentSnapshots = await Promise.all(linkedInstallments.map(async (installment) => {
+          const debtRef = doc(db, "deudas", installment.deudaId);
+          const installmentObligationRef = doc(db, "obligaciones", installment.obligacionId);
+          const [debtSnapshot, installmentObligationSnapshot] = await Promise.all([
+            transaction.get(debtRef),
+            transaction.get(installmentObligationRef),
+          ]);
+          return {
+            installment,
+            debtRef,
+            debtSnapshot,
+            installmentObligationRef,
+            installmentObligationSnapshot,
+          };
+        }));
+        const paidInstallmentIds = new Set();
+        const updatedInstallmentObligations = [];
+        linkedInstallmentSnapshots.forEach((linked) => {
+          const { installment, debtSnapshot, installmentObligationSnapshot } = linked;
+          if (!debtSnapshot.exists() || !installmentObligationSnapshot.exists()) {
+            throw new Error("CREDIT_INSTALLMENT_LINK_UNAVAILABLE");
+          }
+          const debt = debtSnapshot.data();
+          const debtObligation = installmentObligationSnapshot.data();
+          if (debt.usuarioId !== user.uid || debt.obligacionId !== installment.obligacionId ||
+            debtObligation.usuarioId !== user.uid || debtObligation.deudaId !== installment.deudaId) {
+            throw new Error("CREDIT_INSTALLMENT_LINK_UNAVAILABLE");
+          }
+
+          const currentInstallmentNumber = Number(debtObligation.proximoPagoNumero || 1);
+          if (currentInstallmentNumber > installment.numero) {
+            paidInstallmentIds.add(installment.deudaId);
+            return;
+          }
+          if (currentInstallmentNumber !== installment.numero ||
+            Number(debtObligation.valor) !== Number(installment.valor)) {
+            throw new Error("CREDIT_INSTALLMENT_LINK_INVALID");
+          }
+
+          const remainingDebt = Math.max(
+            0,
+            Number(debt.montoRestante ?? debt.monto ?? 0) - Number(installment.valor)
+          );
+          const debtPaid = remainingDebt <= 0;
+          const nextInstallmentNumber = currentInstallmentNumber + 1;
+          const nextInstallmentAmount = debtObligation.valoresCuota?.[nextInstallmentNumber - 1] ?? null;
+          const nextDueDate = debtPaid
+            ? null
+            : getNextDueDate(
+              "mensual",
+              debtObligation.fechaProximoPago,
+              debtObligation.diaVencimiento
+            );
+
+          transaction.update(linked.debtRef, {
+            montoRestante: remainingDebt,
+            pagada: debtPaid,
+            proximoPagoNumero: nextInstallmentNumber,
+            ...(nextDueDate ? { proximaFechaPago: nextDueDate } : {}),
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.update(linked.installmentObligationRef, {
+            deudaRestante: remainingDebt,
+            deudaPagada: debtPaid,
+            activa: !debtPaid,
+            fechaUltimoPeriodoPagado: debtObligation.fechaProximoPago,
+            fechaUltimoPago: serverTimestamp(),
+            ...(nextDueDate ? {
+              fechaProximoPago: nextDueDate,
+              proximoPagoNumero: nextInstallmentNumber,
+              ...(nextInstallmentAmount ? { valor: nextInstallmentAmount } : {}),
+            } : {}),
+            ultimaActualizacion: serverTimestamp(),
+          });
+          paidInstallmentIds.add(installment.deudaId);
+          updatedInstallmentObligations.push({
+            id: installment.obligacionId,
+            activa: !debtPaid,
+            deudaPagada: debtPaid,
+            deudaRestante: remainingDebt,
+            fechaUltimoPeriodoPagado: debtObligation.fechaProximoPago,
+            fechaUltimoPago: paymentDate,
+            ...(nextDueDate ? {
+              fechaProximoPago: nextDueDate,
+              proximoPagoNumero: nextInstallmentNumber,
+              ...(nextInstallmentAmount ? { valor: nextInstallmentAmount } : {}),
+            } : {}),
+          });
+        });
+        const updatedPurchaseInstallments = (currentObligation.cuotasCompra || []).map((installment) =>
+          paidInstallmentIds.has(installment.deudaId)
+            ? { ...installment, pagada: true }
+            : installment
+        );
 
         transaction.update(sourceRef, {
           saldo: balance - amount,
@@ -963,6 +1218,9 @@ const Movimientos = ({ isOpen, onClose }) => {
           montoPendiente: remaining,
           activa: !paid,
           fechaUltimoPago: serverTimestamp(),
+          ...(updatedPurchaseInstallments.length > 0
+            ? { cuotasCompra: updatedPurchaseInstallments }
+            : {}),
           ...(paid ? { fechaUltimoPeriodoPagado: currentObligation.fechaCorte } : {}),
           ultimaActualizacion: serverTimestamp(),
         });
@@ -993,6 +1251,7 @@ const Movimientos = ({ isOpen, onClose }) => {
           paidAt: paymentDate,
           cutoffDate: currentObligation.fechaCorte,
           cardId: currentObligation.tarjetaId,
+          updatedInstallmentObligations,
         };
       });
 
@@ -1011,7 +1270,9 @@ const Movimientos = ({ isOpen, onClose }) => {
           fechaUltimoPago: payment.paidAt,
           ...(payment.paid ? { fechaUltimoPeriodoPagado: payment.cutoffDate } : {}),
         }
-        : item));
+        : payment.updatedInstallmentObligations.find((updated) => updated.id === item.id)
+          ? { ...item, ...payment.updatedInstallmentObligations.find((updated) => updated.id === item.id) }
+          : item));
       setObligationPaymentAmounts((current) => ({
         ...current,
         [obligation.id]: payment.paid ? "0" : formatMoneyInput(String(payment.remaining)),
@@ -1032,6 +1293,9 @@ const Movimientos = ({ isOpen, onClose }) => {
         showToast("El pago no puede superar el saldo pendiente de este extracto", "error");
       } else if (error.message === "PAYMENT_EXCEEDS_CREDIT_DEBT") {
         showToast("El saldo actual de la tarjeta no permite aplicar este pago", "error");
+      } else if (error.message === "CREDIT_INSTALLMENT_LINK_UNAVAILABLE" ||
+        error.message === "CREDIT_INSTALLMENT_LINK_INVALID") {
+        showToast("No se pudo sincronizar la cuota financiada con el extracto", "error");
       } else if (error.message === "OBLIGATION_UNAVAILABLE") {
         showToast("Este extracto ya no está pendiente", "error");
       } else {
@@ -1157,6 +1421,22 @@ const Movimientos = ({ isOpen, onClose }) => {
 
     const valor = Number(formValues.valor.replace(/\./g, ""));
     const establecimiento = formValues.establecimiento.trim().toUpperCase();
+    const matchingIdentifiedNames = getIdentifiedMovementNames(historial, establecimiento, savedPlaces);
+    const identifiedNameForInstallments = selectedIdentifiedName ||
+      (matchingIdentifiedNames.length === 1 ? matchingIdentifiedNames[0] : establecimiento);
+    const defaultInstallments = getDefaultCreditInstallments(
+      historial,
+      identifiedNameForInstallments
+    );
+    const installments = installmentInputTouched
+      ? Number(installmentInput)
+      : Number(installmentInput || defaultInstallments);
+    const nombreEstablecimiento = (
+      selectedIdentifiedName ||
+      (matchingIdentifiedNames.length === 1 ? matchingIdentifiedNames[0] : "") ||
+      newPlaceName.trim().toUpperCase() ||
+      establecimiento
+    );
     const fechaHora = usePreviousDate
       ? new Date(formValues.fechaHora)
       : new Date();
@@ -1175,6 +1455,14 @@ const Movimientos = ({ isOpen, onClose }) => {
 
     const cuentaSeleccionada = accounts.find((c) => c.id === selectedCuentaId);
     if (!cuentaSeleccionada) { showToast("Cuenta inválida", "error"); return; }
+    const isCreditAccount = cuentaSeleccionada.tipoCuenta === "credito";
+    if (mode === "pago" && isCreditAccount &&
+      ((installmentInputTouched && !installmentInput) ||
+        !Number.isSafeInteger(installments) || installments < 1 ||
+        installments > 60 || installments > valor)) {
+      showToast("Las cuotas deben ser un número entero entre 1 y 60 y no superar el valor de la compra", "error");
+      return;
+    }
     if (mode === "avance") {
       if (cuentaSeleccionada.tipoCuenta !== "credito") {
         showToast("Selecciona una tarjeta de crédito para registrar el avance", "error");
@@ -1262,10 +1550,11 @@ const Movimientos = ({ isOpen, onClose }) => {
             cargoAvance: cargoConfigurado,
             cuotas: cuotasConfiguradas,
             establecimiento,
+            nombreEstablecimiento,
             tags: finalTags,
             tipo: "credito_avance",
             origen: "tarjeta_credito",
-            obligacionId: obligationId,
+            "obligacionId": obligationId,
             fechaCorteTarjeta: cutoffDate,
             fechaLimitePagoTarjeta: paymentDate,
             fechaHora,
@@ -1311,6 +1600,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         setHistorial((current) => [...current, {
           id: Date.now().toString(),
           establecimiento,
+          nombreEstablecimiento,
           valor: creditResult.valorTotal,
           tags: finalTags,
         }]);
@@ -1321,6 +1611,8 @@ const Movimientos = ({ isOpen, onClose }) => {
         console.error("Error guardando avance de tarjeta:", error);
         showToast(error.message === "CREDIT_LIMIT_EXCEEDED"
           ? "El avance y su cargo superan el cupo disponible de la tarjeta"
+          : error.message === "CREDIT_USAGE_LIMIT_EXCEEDED"
+          ? "El avance y su cargo superan el límite de uso configurado para la tarjeta"
           : "No se pudo registrar el avance", "error");
         return;
       } finally {
@@ -1330,7 +1622,6 @@ const Movimientos = ({ isOpen, onClose }) => {
     if (cuentaSeleccionada.tipoCuenta === "ahorros") {
       showToast("Las cuentas de ahorros no se pueden usar para pagos", "error"); return;
     }
-    const isCreditAccount = cuentaSeleccionada.tipoCuenta === "credito";
     if (!isCreditAccount && valor > getAvailableBalance(selectedCuentaId)) {
       showToast("Saldo disponible insuficiente: hay dinero reservado en presupuestos", "error"); return;
     }
@@ -1349,72 +1640,36 @@ const Movimientos = ({ isOpen, onClose }) => {
             throw new Error("CREDIT_ACCOUNT_INVALID");
           }
           const creditChanges = applyCreditPurchase(account, valor);
-          const statementDates = getCreditStatementForPurchase(account, fechaHora);
-          if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
-          const startDate = getLocalDateString(statementDates.startDate);
-          const cutoffDate = getLocalDateString(statementDates.cutoffDate);
-          const paymentDate = getLocalDateString(statementDates.paymentDate);
-          const obligationId = `tarjeta-${selectedCuentaId}-${cutoffDate}`;
-          const obligationRef = doc(db, "obligaciones", obligationId);
-          const obligationSnapshot = await transaction.get(obligationRef);
-          const previousObligation = obligationSnapshot.exists() ? obligationSnapshot.data() : null;
-          if (previousObligation && (
-            previousObligation.usuarioId !== user.uid ||
-            previousObligation.tarjetaId !== selectedCuentaId
-          )) {
-            throw new Error("CREDIT_OBLIGATION_CONFLICT");
-          }
-          const totalStatement = Number(previousObligation?.valor || 0) + valor;
-          const remainingStatement =
-            Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + valor;
-
-          transaction.update(accountRef, {
-            ...creditChanges,
-            ultimaActualizacion: serverTimestamp(),
-          });
-          transaction.set(obligationRef, {
-            usuarioId: user.uid,
-            tipo: "pago_tarjeta",
-            nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
-            tarjetaId: selectedCuentaId,
-            tarjetaNombre: account.nombre || "",
-            tarjetaBanco: account.banco || "",
-            cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
-            fechaInicioCiclo: startDate,
-            fechaCorte: cutoffDate,
-            fechaProximoPago: paymentDate,
-            diaVencimiento: Number(paymentDate.slice(-2)),
-            frecuencia: "mensual",
-            valor: totalStatement,
-            montoPendiente: remainingStatement,
-            activa: remainingStatement > 0,
-            anulada: false,
-            ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
-            ultimaActualizacion: serverTimestamp(),
-          });
-          transaction.set(movementRef, {
-            userId: user.uid,
-            usuarioId: user.uid,
-            cuentaId: selectedCuentaId,
-            cuentaBanco: account.banco || "",
-            cuentaNombre: account.nombre || "",
+          const installmentSchedule = getCreditInstallmentSchedule(
+            account,
             valor,
-            establecimiento,
-            tags: finalTags,
-            tipo: "credito_compra",
-            origen: "tarjeta_credito",
-            obligacionId: obligationId,
-            fechaCorteTarjeta: cutoffDate,
-            fechaLimitePagoTarjeta: paymentDate,
-            fechaHora,
-            fechaCreacion: serverTimestamp(),
-          });
-
-          return {
-            available: creditChanges.saldo,
-            debt: creditChanges.deudaActual,
-            obligation: {
-              id: obligationId,
+            installments,
+            fechaHora
+          );
+          if (!installmentSchedule) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+          const firstInstallment = installmentSchedule[0];
+          if (installments === 1) {
+            const statementDates = getCreditStatementForPurchase(account, fechaHora);
+            if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+            const startDate = getLocalDateString(statementDates.startDate);
+            const cutoffDate = getLocalDateString(statementDates.cutoffDate);
+            const paymentDate = getLocalDateString(statementDates.paymentDate);
+            const obligationId = `tarjeta-${selectedCuentaId}-${cutoffDate}`;
+            const obligationRef = doc(db, "obligaciones", obligationId);
+            const obligationSnapshot = await transaction.get(obligationRef);
+            const previousObligation = obligationSnapshot.exists()
+              ? obligationSnapshot.data()
+              : null;
+            if (previousObligation && (
+              previousObligation.usuarioId !== user.uid ||
+              previousObligation.tarjetaId !== selectedCuentaId
+            )) {
+              throw new Error("CREDIT_OBLIGATION_CONFLICT");
+            }
+            const totalStatement = Number(previousObligation?.valor || 0) + valor;
+            const remainingStatement =
+              Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + valor;
+            const obligation = {
               usuarioId: user.uid,
               tipo: "pago_tarjeta",
               nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
@@ -1431,28 +1686,209 @@ const Movimientos = ({ isOpen, onClose }) => {
               montoPendiente: remainingStatement,
               activa: remainingStatement > 0,
               anulada: false,
-            },
+              ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+              ultimaActualizacion: serverTimestamp(),
+            };
+
+            transaction.update(accountRef, {
+              ...creditChanges,
+              ultimaActualizacion: serverTimestamp(),
+            });
+            transaction.set(obligationRef, obligation);
+            transaction.set(movementRef, {
+              userId: user.uid,
+              usuarioId: user.uid,
+              cuentaId: selectedCuentaId,
+              cuentaBanco: account.banco || "",
+              cuentaNombre: account.nombre || "",
+              valor,
+              establecimiento,
+              nombreEstablecimiento,
+              tags: finalTags,
+              tipo: "credito_compra",
+              origen: "tarjeta_credito",
+              cuotas: 1,
+              "obligacionId": obligationId,
+              fechaCorteTarjeta: cutoffDate,
+              fechaLimitePagoTarjeta: paymentDate,
+              fechaHora,
+              fechaCreacion: serverTimestamp(),
+            });
+
+            return {
+              available: creditChanges.saldo,
+              debt: creditChanges.deudaActual,
+              obligation: { ...obligation, id: obligationId },
+              installmentAmount: valor,
+            };
+          }
+
+          const debtId = movementRef.id;
+          const obligationId = `deuda-tarjeta-${movementRef.id}`;
+          const debtRef = doc(db, "deudas", debtId);
+          const obligationRef = doc(db, "obligaciones", obligationId);
+          const firstDueDate = getLocalDateString(firstInstallment.paymentDate);
+          const installmentStatements = installmentSchedule.map((installment) => {
+            const startDate = getLocalDateString(installment.startDate);
+            const cutoffDate = getLocalDateString(installment.cutoffDate);
+            const paymentDate = getLocalDateString(installment.paymentDate);
+            const statementId = `tarjeta-${selectedCuentaId}-${cutoffDate}`;
+            return {
+              installment,
+              startDate,
+              cutoffDate,
+              paymentDate,
+              ref: doc(db, "obligaciones", statementId),
+            };
+          });
+          const installmentStatementSnapshots = await Promise.all(
+            installmentStatements.map(({ ref }) => transaction.get(ref))
+          );
+          installmentStatements.forEach((statement, index) => {
+            const snapshot = installmentStatementSnapshots[index];
+            const previousStatement = snapshot.exists() ? snapshot.data() : null;
+            if (previousStatement && (
+              previousStatement.usuarioId !== user.uid ||
+              previousStatement.tarjetaId !== selectedCuentaId ||
+              previousStatement.tipo !== "pago_tarjeta"
+            )) {
+              throw new Error("CREDIT_OBLIGATION_CONFLICT");
+            }
+            const statementTotals = addCreditInstallmentToStatement(
+              previousStatement,
+              statement.installment.amount,
+              {
+                deudaId: debtId,
+                obligacionId: obligationId,
+                numero: statement.installment.installment,
+                valor: statement.installment.amount,
+                pagada: false,
+              }
+            );
+            transaction.set(statement.ref, {
+              usuarioId: user.uid,
+              tipo: "pago_tarjeta",
+              nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+              tarjetaId: selectedCuentaId,
+              tarjetaNombre: account.nombre || "",
+              tarjetaBanco: account.banco || "",
+              cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+              fechaInicioCiclo: statement.startDate,
+              fechaCorte: statement.cutoffDate,
+              fechaProximoPago: statement.paymentDate,
+              diaVencimiento: Number(statement.paymentDate.slice(-2)),
+              frecuencia: "mensual",
+              ...statementTotals,
+              ...(previousStatement?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+              ultimaActualizacion: serverTimestamp(),
+            });
+          });
+          const debt = {
+            usuarioId: user.uid,
+            nombre: nombreEstablecimiento || establecimiento,
+            monto: valor,
+            montoRestante: valor,
+            fechaAdquisicion: fechaHora,
+            proximaFechaPago: firstDueDate,
+            tieneInteres: false,
+            pagada: false,
+            cuotas: installments,
+            valorCuota: firstInstallment.amount,
+            valoresCuota: installmentSchedule.map(({ amount }) => amount),
+            tags: finalTags,
+            cuentaId: selectedCuentaId,
+            tarjetaId: selectedCuentaId,
+            movimientoId: movementRef.id,
+            obligacionId: obligationId,
+            origen: "compra_tarjeta",
+            fechaCreacion: serverTimestamp(),
+            ultimaActualizacion: serverTimestamp(),
+          };
+          const obligation = {
+            usuarioId: user.uid,
+            nombre: debt.nombre,
+            tipo: "pago_deuda",
+            valor: firstInstallment.amount,
+            cuentaId: selectedCuentaId,
+            cuentaBanco: account.banco || "",
+            cuentaNombre: account.nombre || "",
+            frecuencia: "mensual",
+            fechaProximoPago: firstDueDate,
+            diaVencimiento: Number(firstDueDate.slice(-2)),
+            proximoPagoNumero: 1,
+            deudaId: debtId,
+            deudaRestante: valor,
+            deudaPagada: false,
+            cuotas: installments,
+            valoresCuota: installmentSchedule.map(({ amount }) => amount),
+            activa: true,
+            fechaCreacion: serverTimestamp(),
+          };
+
+          transaction.update(accountRef, {
+            ...creditChanges,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.set(debtRef, debt);
+          transaction.set(obligationRef, obligation);
+          transaction.set(movementRef, {
+            userId: user.uid,
+            usuarioId: user.uid,
+            cuentaId: selectedCuentaId,
+            cuentaBanco: account.banco || "",
+            cuentaNombre: account.nombre || "",
+            valor,
+            establecimiento,
+            nombreEstablecimiento,
+            tags: finalTags,
+            tipo: "credito_compra",
+            origen: "tarjeta_credito",
+            cuotas: installments,
+            valorCuota: firstInstallment.amount,
+            deudaId: debtId,
+            obligacionId: obligationId,
+            fechaLimitePagoTarjeta: firstDueDate,
+            fechaHora,
+            fechaCreacion: serverTimestamp(),
+          });
+
+          return {
+            available: creditChanges.saldo,
+            debt: creditChanges.deudaActual,
+            debtId,
+            obligation: { ...obligation, id: obligationId },
+            installmentAmount: firstInstallment.amount,
           };
         });
+        if (installments > 1 && !creditResult.debtId) {
+          throw new Error("CREDIT_DEBT_NOT_CREATED");
+        }
 
         setAccounts((current) => current.map((account) => account.id === selectedCuentaId
           ? { ...account, saldo: creditResult.available, deudaActual: creditResult.debt }
           : account));
         setObligations((current) => [
-          ...current.filter((item) => item.id !== creditResult.obligation.id),
+          ...current.filter((item) =>
+            item.id !== creditResult.obligation.id
+          ),
           creditResult.obligation,
         ].sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
         setObligationPaymentAmounts((current) => ({
           ...current,
-          [creditResult.obligation.id]: formatMoneyInput(String(creditResult.obligation.montoPendiente)),
+          [creditResult.obligation.id]: formatMoneyInput(String(creditResult.obligation.valor)),
         }));
         setHistorial((current) => [...current, {
           id: Date.now().toString(),
           establecimiento,
+          nombreEstablecimiento,
           valor,
+          cuotas: installments,
+          valorCuota: creditResult.obligation.valor,
           tags: finalTags,
         }]);
-        showToast("Compra registrada con tarjeta de crédito", "success");
+        showToast(installments > 1
+          ? `Compra registrada como deuda: ${installments} cuotas mensuales de $${formatMoney(creditResult.installmentAmount)}`
+          : "Compra registrada con tarjeta de crédito", "success");
         resetForm();
         return;
       }
@@ -1470,6 +1906,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         cuentaNombre: cuentaSeleccionada.nombre,
         valor,
         establecimiento,
+        nombreEstablecimiento,
         fechaHora,
         tags: finalTags,
         fechaCreacion: serverTimestamp(),
@@ -1490,6 +1927,7 @@ const Movimientos = ({ isOpen, onClose }) => {
         {
           id: Date.now().toString(),
           establecimiento,
+          nombreEstablecimiento,
           valor,
           tags: finalTags,
         },
@@ -1502,15 +1940,48 @@ const Movimientos = ({ isOpen, onClose }) => {
       console.error("Error guardando movimiento:", error);
       showToast(error.message === "CREDIT_LIMIT_EXCEEDED"
         ? "La compra supera el cupo disponible de la tarjeta"
+        : error.message === "CREDIT_USAGE_LIMIT_EXCEEDED"
+        ? "La compra supera el límite de uso configurado para la tarjeta"
         : error.message === "CREDIT_STATEMENT_DATES_UNAVAILABLE"
         ? "Configura las fechas de corte y pago de la tarjeta"
         : error.message === "CREDIT_OBLIGATION_CONFLICT"
         ? "No se pudo asociar la compra al extracto de esta tarjeta"
+          : error.message === "CREDIT_DEBT_NOT_CREATED"
+          ? "No se confirmó la creación de la deuda de la compra"
+          : error.code === "permission-denied"
+        ? "Firebase denegó el registro; publica las reglas actualizadas de Firestore"
         : "No se pudo crear el movimiento", "error");
     } finally {
       setLoading(false);
     }
   };
+
+  const identifiedNameMatches = getIdentifiedMovementNames(
+    historial,
+    formValues.establecimiento,
+    savedPlaces
+  );
+  const identifiedNameForInstallments = selectedIdentifiedName ||
+    (identifiedNameMatches.length === 1 ? identifiedNameMatches[0] : formValues.establecimiento);
+  const displayedInstallmentDefault = getDefaultCreditInstallments(
+    historial,
+    identifiedNameForInstallments
+  );
+  const installmentPreviewCount = Number(
+    installmentInputTouched ? installmentInput : installmentInput || displayedInstallmentDefault
+  );
+  const installmentPreviewTotal = Number(formValues.valor.replace(/\./g, ""));
+  const installmentPreview = Number.isSafeInteger(installmentPreviewTotal) &&
+    installmentPreviewTotal > 0 &&
+    Number.isSafeInteger(installmentPreviewCount) &&
+    installmentPreviewCount > 1 &&
+    installmentPreviewCount <= installmentPreviewTotal &&
+    installmentPreviewCount <= 60
+    ? getCreditInstallmentAmounts(installmentPreviewTotal, installmentPreviewCount)
+    : [];
+  const installmentPreviewMonthlyAmount = installmentPreview.length > 0
+    ? installmentPreview[0]
+    : 0;
 
   if (!isOpen) {
     return null;
@@ -1649,6 +2120,48 @@ const Movimientos = ({ isOpen, onClose }) => {
             />
           </div>
 
+          {mode === "pago" && selectedAccount?.tipoCuenta === "credito" && (
+            <div className="mov-field">
+              <label className="mov-label" htmlFor="purchase-installments">Cuotas</label>
+              <input
+                id="purchase-installments"
+                className="mov-input"
+                type="text"
+                inputMode="numeric"
+                value={installmentInputTouched ? installmentInput : installmentInput || displayedInstallmentDefault}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (/^\d*$/.test(value)) {
+                    setInstallmentInputTouched(true);
+                    setInstallmentInput(value);
+                  }
+                }}
+              />
+              <small>
+                {Number(installmentInput || displayedInstallmentDefault) > 1
+                  ? `Se registrará una cuota mensual en la deuda de la tarjeta durante ${Number(installmentInput || displayedInstallmentDefault)} meses.`
+                  : "La compra se cargará en una sola cuota mensual."}
+              </small>
+              {installmentPreview.length > 0 && (
+                <div className="mov-installment-preview" aria-live="polite">
+                  <strong>
+                    {installmentPreviewCount} cuotas · desde ${formatMoney(installmentPreviewMonthlyAmount)} al mes
+                  </strong>
+                  <span>
+                    Total financiado: ${formatMoney(installmentPreviewTotal)}
+                  </span>
+                  <small>
+                    {installmentPreview.every((amount) => amount === installmentPreviewMonthlyAmount)
+                      ? `Cada una de las ${installmentPreviewCount} cuotas será de $${formatMoney(installmentPreviewMonthlyAmount)}.`
+                      : `Cuotas: ${installmentPreview.map((amount, index) =>
+                        `${index + 1}. $${formatMoney(amount)}`
+                      ).join(" · ")}`}
+                  </small>
+                </div>
+              )}
+            </div>
+          )}
+
           {mode === "avance" && (
             <div className="mov-field">
               <span className="mov-label">Detalle del avance</span>
@@ -1756,49 +2269,97 @@ const Movimientos = ({ isOpen, onClose }) => {
               placeholder={mode === "avance" ? "Cajero o descripción del avance" : "Nombre del comercio"}
             />
 
+            {formValues.establecimiento.trim().length >= 3 &&
+              identifiedNameMatches.length > 1 &&
+              !selectedIdentifiedName && (
+                <div className="mov-suggestion">
+                  <strong>Selecciona el lugar para usar sus tags:</strong>
+                  <div className="mov-suggestion-tags">
+                    {identifiedNameMatches.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="mov-suggestion-tag"
+                        onClick={() => {
+                          setSelectedIdentifiedName(name);
+                          obtenerSugerencia(formValues.establecimiento, formValues.valor, name);
+                        }}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            {formValues.establecimiento.trim().length >= 3 &&
+              identifiedNameMatches.length === 0 && (
+                <div className="mov-suggestion">
+                  <strong>Primera vez comprando aquí</strong>
+                  <span className="mov-suggestion-hint">
+                    Registra un nombre para identificar este lugar y encontrarlo en tus próximos movimientos.
+                  </span>
+                  <label className="mov-label" htmlFor="nombreEstablecimiento">
+                    Nombre para identificarlo
+                  </label>
+                  <input
+                    id="nombreEstablecimiento"
+                    className="mov-input"
+                    type="text"
+                    value={newPlaceName}
+                    onChange={(event) => setNewPlaceName(event.target.value.toUpperCase())}
+                    placeholder="Ej. EDS LA FLORA"
+                  />
+                </div>
+              )}
+
             {/* Sugerencia */}
             {sugerencia && (
               <div className="mov-suggestion">
                 <div className="mov-suggestion-header">
                   <strong>🏪 {sugerencia.establecimiento}</strong>
                 </div>
-                <div className="mov-suggestion-tags">
-                  <span className="mov-suggestion-label">Tags sugeridos:</span>
-                  {sugerencia.tags.map((tag) => (
+                {sugerencia.tags.length ? (
+                  <>
+                    <div className="mov-suggestion-tags">
+                      <span className="mov-suggestion-label">Tags sugeridos:</span>
+                      {sugerencia.tags.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          className={`mov-suggestion-tag${selectedSuggestionTags.includes(tag) ? " mov-suggestion-tag--selected" : ""}`}
+                          aria-pressed={selectedSuggestionTags.includes(tag)}
+                          onClick={() => setSelectedSuggestionTags((current) =>
+                            current.includes(tag)
+                              ? current.filter((selectedTag) => selectedTag !== tag)
+                              : [...current, tag]
+                          )}
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="mov-suggestion-hint">Selecciona los tags que quieras agregar.</span>
+                    <div className="mov-suggestion-confidence">
+                      📈 Confianza: {sugerencia.confianza}%
+                    </div>
                     <button
-                      key={tag}
                       type="button"
-                      className={`mov-suggestion-tag${selectedSuggestionTags.includes(tag) ? " mov-suggestion-tag--selected" : ""}`}
-                      aria-pressed={selectedSuggestionTags.includes(tag)}
-                      onClick={() => setSelectedSuggestionTags((current) =>
-                        current.includes(tag)
-                          ? current.filter((selectedTag) => selectedTag !== tag)
-                          : [...current, tag]
-                      )}
+                      className="mov-apply-suggestion"
+                      onClick={() => {
+                        setTags((current) => normalizeTags([...current, ...selectedSuggestionTags]));
+                        setSelectedSuggestionTags([]);
+                      }}
+                      disabled={selectedSuggestionTags.length === 0}
                     >
-                      {tag}
+                      ✓ Agregar tags seleccionados
                     </button>
-                  ))}
-                </div>
-                <span className="mov-suggestion-hint">Selecciona los tags que quieras agregar.</span>
-                <div className="mov-suggestion-confidence">
-                  📈 Confianza: {sugerencia.confianza}%
-                </div>
-                <button
-                  type="button"
-                  className="mov-apply-suggestion"
-                  onClick={() => {
-                    setFormValues((prev) => ({
-                      ...prev,
-                      establecimiento: sugerencia.establecimiento,
-                    }));
-                    setTags((current) => normalizeTags([...current, ...selectedSuggestionTags]));
-                    setSelectedSuggestionTags([]);
-                  }}
-                  disabled={selectedSuggestionTags.length === 0}
-                >
-                  ✓ Agregar tags seleccionados
-                </button>
+                  </>
+                ) : (
+                  <span className="mov-suggestion-hint">
+                    Este lugar está registrado, pero aún no tiene tags anteriores. Puedes agregarlos abajo.
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -1890,6 +2451,12 @@ const Movimientos = ({ isOpen, onClose }) => {
                         ${formatMoney(obligation.tipo === "pago_tarjeta"
                           ? obligation.montoPendiente ?? obligation.valor
                           : obligation.valor)}
+                        {obligation.deudaId && obligation.cuotas
+                          ? ` · Cuota ${obligation.proximoPagoNumero || 1} de ${obligation.cuotas}`
+                          : ""}
+                        {obligation.deudaId && obligation.cuotas
+                          ? " · Incluida en el extracto de la tarjeta"
+                          : ""}
                         {" · "}{obligation.tipo === "pago_tarjeta"
                           ? `${obligation.tarjetaBanco} · ${obligation.tarjetaNombre} · Corte ${formatObligationDate(obligation.fechaCorte)}`
                           : `${obligation.cuentaNombre} · ${formatObligationSchedule(obligation)}`}
@@ -1906,6 +2473,7 @@ const Movimientos = ({ isOpen, onClose }) => {
                           type="text"
                           inputMode="numeric"
                           required
+                          disabled={Boolean(obligation.deudaId && obligation.cuotas)}
                           aria-label={`Valor realmente pagado de ${obligation.nombre}`}
                           value={obligationPaymentAmounts[obligation.id] ?? ""}
                           placeholder={obligation.tipo === "pago_tarjeta"
@@ -1922,11 +2490,25 @@ const Movimientos = ({ isOpen, onClose }) => {
                       <button
                         type="button"
                         className="mov-budget__accept"
-                        disabled={loading}
+                        disabled={loading || Boolean(obligation.deudaId && obligation.cuotas)}
                         onClick={() => openObligationPaymentModal(obligation)}
                       >
-                        {obligation.tipo === "pago_tarjeta" ? "Continuar abono" : "Continuar pago"}
+                        {obligation.deudaId && obligation.cuotas
+                          ? "Se actualiza con el extracto"
+                          : obligation.tipo === "pago_tarjeta" ? "Continuar abono" : "Continuar pago"}
                       </button>
+                      {obligation.tipo === "pago_tarjeta" && (
+                          <button
+                            type="button"
+                            className="mov-budget__accept mov-card-statement__full-payment"
+                            disabled={loading || Number(
+                              obligation.montoPendiente ?? obligation.valor ?? 0
+                            ) <= 0}
+                            onClick={() => payFullCardStatement(obligation)}
+                          >
+                            Pagar extracto completo
+                          </button>
+                      )}
                     </div>
                   </article>
                 ))}
@@ -2109,6 +2691,22 @@ const Movimientos = ({ isOpen, onClose }) => {
             </div>
             {obligationPaymentMethods.length === 0 && (
               <p className="mov-obligation-modal__hint">No tienes tarjetas o cuentas disponibles para pagar.</p>
+            )}
+            {obligationPaymentModal.tipo !== "pago_tarjeta" && (
+              <label className="mov-obligation-date-adjust">
+                <input
+                  type="checkbox"
+                  checked={keepObligationDate}
+                  disabled={loading}
+                  onChange={(event) => setKeepObligationDate(event.target.checked)}
+                />
+                <span>
+                  <strong>Continuar con la fecha de vencimiento</strong>
+                  <small>
+                    Marcada, el siguiente vencimiento se calcula desde la fecha programada. Desmárcala para fijarlo un mes desde hoy y continuar cada mes desde ese nuevo día.
+                  </small>
+                </span>
+              </label>
             )}
             <div className="mov-obligation-modal__actions">
               <button

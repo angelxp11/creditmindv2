@@ -382,6 +382,44 @@
   font-size: 0.95rem;
 }
 
+.deudas-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.deudas-info-button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--accent-color);
+  cursor: pointer;
+}
+
+.deudas-info-button:hover,
+.deudas-info-button:focus-visible {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.deudas-installment {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.deudas-installment small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .deudas-list tbody tr {
   transition: all 0.2s ease;
 }
@@ -429,7 +467,8 @@
 .deudas-edit,
 .deudas-edit-subaction,
 .deudas-remaining,
-.deudas-delete {
+.deudas-delete,
+.deudas-description {
   border: none;
   border-radius: 8px;
   padding: 8px 14px;
@@ -459,6 +498,16 @@
 .deudas-edit-subaction {
   background: var(--info);
   color: white;
+}
+
+.deudas-description {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.deudas-description:hover {
+  opacity: 0.9;
+  transform: translateY(-2px);
 }
 
 .deudas-edit:hover,
@@ -592,6 +641,27 @@
   color: var(--text-muted);
   font-size: 0.93rem;
   line-height: 1.5;
+}
+
+.deudas-description-modal {
+  width: min(460px, 92vw);
+}
+
+.deudas-description-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.deudas-description-tags span {
+  padding: 7px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 700;
 }
 
 .deudas-modal-content input {

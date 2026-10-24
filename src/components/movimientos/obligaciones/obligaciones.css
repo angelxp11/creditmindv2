@@ -198,6 +198,72 @@
   padding-top: 22px;
 }
 
+.obligaciones-list__heading--main {
+  margin-bottom: 18px;
+}
+
+.obligaciones-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.obligaciones-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  background: var(--bg-card);
+}
+
+.obligaciones-group > summary {
+  position: relative;
+  margin: 0;
+  padding: 15px 42px 15px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.obligaciones-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.obligaciones-group > summary::after {
+  position: absolute;
+  top: 50%;
+  right: 17px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  content: "";
+  transform: translateY(-70%) rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.obligaciones-group[open] > summary::after {
+  transform: translateY(-25%) rotate(225deg);
+}
+
+.obligaciones-group > summary:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -3px;
+}
+
+.obligaciones-group__content {
+  padding: 0 16px 12px;
+}
+
+.obligaciones-statement-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 18px;
+}
+
+.obligaciones-statement-tools .obligaciones-submit {
+  padding: 0 16px;
+}
+
 .obligaciones-list__heading {
   margin-bottom: 12px;
 }
@@ -206,6 +272,12 @@
   margin: 0;
   color: var(--text-title);
   font-size: 1.05rem;
+}
+
+.obligaciones-list__heading h3 {
+  margin: 0;
+  color: var(--text-title);
+  font-size: 0.95rem;
 }
 
 .obligaciones-list__heading > span {
@@ -231,6 +303,32 @@
 .obligacion-row__details span {
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+
+.obligacion-debt-progress {
+  display: grid;
+  max-width: 420px;
+  gap: 5px;
+  margin: 3px 0;
+}
+
+.obligacion-debt-progress__installments {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.obligacion-debt-progress__slot {
+  height: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-hover);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.obligacion-debt-progress__slot--paid {
+  border-color: var(--success);
+  background: var(--success);
 }
 
 .obligacion-row--paused {
@@ -326,6 +424,138 @@
   min-width: 160px;
 }
 
+.statement-card-options,
+.statement-cycle-options {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.statement-card-options legend,
+.statement-cycle-options legend {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.statement-card-options__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.statement-card-option {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.statement-card-option:hover,
+.statement-cycle-option:hover {
+  border-color: var(--accent-color);
+  transform: translateY(-1px);
+}
+
+.statement-card-option--selected,
+.statement-cycle-option--selected {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.16);
+}
+
+.statement-card-option > img {
+  width: 88px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.statement-card-option__details,
+.statement-cycle-option__details {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.statement-card-option__details strong,
+.statement-cycle-option__details strong {
+  overflow: hidden;
+  color: var(--text-title);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statement-card-option__details > span,
+.statement-cycle-option__details > span,
+.statement-cycle-option__details small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.statement-card-option__radio,
+.statement-cycle-option__radio {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid var(--border-color);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.statement-card-option__radio {
+  margin-left: auto;
+}
+
+.statement-card-option--selected .statement-card-option__radio,
+.statement-cycle-option--selected .statement-cycle-option__radio {
+  border: 5px solid var(--accent-color);
+}
+
+.statement-cycle-options__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.statement-cycle-option {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.statement-cycle-option__radio {
+  margin-top: 2px;
+}
+
+.statement-cycle-option__details small {
+  margin-top: 2px;
+}
+
 .obligaciones-edit-modal--income .obligaciones-form__actions {
   grid-column: 1 / -1;
 }
@@ -340,10 +570,16 @@
   .obligaciones-page { padding: 10px; }
   .obligaciones-panel { padding: 18px 14px; }
   .obligaciones-form { grid-template-columns: 1fr; }
+  .obligaciones-statement-tools { align-items: stretch; flex-direction: column; }
+  .obligaciones-statement-tools .obligaciones-submit { min-height: 44px; }
   .obligaciones-edit-modal { grid-template-columns: 1fr; padding: 18px; }
+  .statement-cycle-options__grid { grid-template-columns: 1fr; }
+  .statement-card-options__grid { grid-template-columns: 1fr; }
   .obligaciones-header { flex-direction: column; }
   .obligaciones-close { width: 100%; }
   .obligaciones-hint { grid-column: 1; }
+  .obligaciones-group > summary { padding-left: 12px; }
+  .obligaciones-group__content { padding: 0 12px 10px; }
   .obligacion-row { align-items: flex-start; flex-wrap: wrap; }
   .obligacion-row button { flex-shrink: 0; }
   .obligaciones-modal__actions { flex-direction: column; }

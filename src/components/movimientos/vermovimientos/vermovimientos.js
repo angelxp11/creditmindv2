@@ -12,7 +12,12 @@ import {
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
-import { applyCreditPayment, applyCreditPurchase } from "../../cuentas/creditAccountUtils";
+import {
+  applyCreditPayment,
+  applyCreditPurchase,
+  getCreditInstallmentSchedule,
+} from "../../cuentas/creditAccountUtils";
+import { getLocalDateString } from "../obligaciones/obligationUtils";
 import Filtro from "./filtro";
 import "./vermovimientos.css";
 
@@ -363,6 +368,10 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         ? `¿Eliminar este ingreso? Se descontarán $${formatMoney(movimiento.valor)} de la cuenta.`
         : isCreditAdvance
         ? `¿Eliminar este avance? Se devolverán $${formatMoney(movimiento.valor)} al cupo de la tarjeta.`
+        : isCreditPurchase && Number(movimiento.cuotas || 1) === 1
+        ? `¿Eliminar esta compra? Se descontará del extracto de la tarjeta y se devolverá $${formatMoney(movimiento.valor)} al cupo.`
+        : movimiento.tipo === "credito_compra" && movimiento.deudaId
+        ? `¿Eliminar esta compra financiada? Se borrarán la deuda y su obligación, se revertirán sus pagos registrados y se devolverá el valor a la tarjeta.`
         : `¿Estás seguro de que deseas eliminar este movimiento? Se devolverán $${formatMoney(movimiento.valor)} a la cuenta.`
     );
     if (!confirmDelete) return;
@@ -377,7 +386,309 @@ const VerMovimientos = ({ isOpen, onClose }) => {
       }
 
       if (isCreditPurchase || isCreditAdvance) {
-        const accountRef = doc(db, "cuentas", movimiento.cuentaId);
+        const accountId = movimiento.cuentaId || selectedCuentaId;
+        const accountRef = doc(db, "cuentas", accountId);
+        if (isCreditPurchase && movimiento.deudaId) {
+          const userId = auth.currentUser?.uid;
+          if (!userId || !movimiento.id || !accountId) {
+            throw new Error("CREDIT_DEBT_UNAVAILABLE");
+          }
+          const debtRef = doc(db, "deudas", movimiento.deudaId);
+          const linkedPaymentsByUserIdQuery = query(
+            collection(db, "movimientos"),
+            where("deudaId", "==", movimiento.deudaId),
+            where("userId", "==", userId)
+          );
+          const linkedPaymentsByUsuarioIdQuery = query(
+            collection(db, "movimientos"),
+            where("deudaId", "==", movimiento.deudaId),
+            where("usuarioId", "==", userId)
+          );
+          const [
+            linkedPaymentsByUserIdSnapshot,
+            linkedPaymentsByUsuarioIdSnapshot,
+          ] = await Promise.all([
+            getDocs(linkedPaymentsByUserIdQuery),
+            getDocs(linkedPaymentsByUsuarioIdQuery),
+          ]);
+          let updatedAccounts = [];
+          let deletedPaymentIds = [];
+
+          await runTransaction(db, async (transaction) => {
+            const [accountSnapshot, debtSnapshot] = await Promise.all([
+              transaction.get(accountRef),
+              transaction.get(debtRef),
+            ]);
+            if (!accountSnapshot.exists() || !debtSnapshot.exists()) {
+              throw new Error("CREDIT_DEBT_UNAVAILABLE");
+            }
+            const debt = debtSnapshot.data();
+            const obligationId = movimiento.obligacionId || debt.obligacionId;
+            if (!obligationId) throw new Error("CREDIT_OBLIGATION_UNAVAILABLE");
+            const obligationRef = doc(db, "obligaciones", obligationId);
+            const obligationSnapshot = await transaction.get(obligationRef);
+            if (accountSnapshot.data().usuarioId !== userId ||
+              accountSnapshot.data().tipoCuenta !== "credito") {
+              throw new Error("CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE");
+            }
+            if (debt.usuarioId !== userId ||
+              debt.movimientoId !== movimiento.id) {
+              throw new Error("CREDIT_DEBT_UNAVAILABLE");
+            }
+            if (!obligationSnapshot.exists() ||
+              obligationSnapshot.data().deudaId !== movimiento.deudaId) {
+              throw new Error("CREDIT_OBLIGATION_UNAVAILABLE");
+            }
+
+            const linkedPaymentDocuments = new Map([
+              ...linkedPaymentsByUserIdSnapshot.docs,
+              ...linkedPaymentsByUsuarioIdSnapshot.docs,
+            ].map((snapshot) => [snapshot.id, snapshot]));
+            const linkedPaymentSnapshots = new Map(await Promise.all(
+              [...linkedPaymentDocuments.keys()].map(async (id) => {
+                const snapshot = await transaction.get(doc(db, "movimientos", id));
+                return [id, snapshot];
+              })
+            ));
+            const linkedPayments = [...linkedPaymentSnapshots.values()]
+              .filter((snapshot) => snapshot.id !== movimiento.id)
+              .filter((snapshot) => snapshot.exists())
+              .map((snapshot) => {
+                const payment = snapshot.data();
+                if ((payment.usuarioId || payment.userId) !== userId) {
+                  throw new Error("CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE");
+                }
+                return { id: snapshot.id, ...payment };
+              });
+            const installmentSchedule = getCreditInstallmentSchedule(
+              accountSnapshot.data(),
+              Number(movimiento.valor),
+              Number(movimiento.cuotas || 1),
+              getMovementDate(movimiento)
+            );
+            if (!installmentSchedule) throw new Error("CREDIT_STATEMENT_UNAVAILABLE");
+            const linkedStatementAmounts = new Map();
+            linkedPayments.forEach((payment) => {
+              if (!payment.obligacionPagadaId || !payment.obligacionId) return;
+              linkedStatementAmounts.set(
+                payment.obligacionId,
+                (linkedStatementAmounts.get(payment.obligacionId) || 0) + Number(payment.valor || 0)
+              );
+            });
+            installmentSchedule.forEach((installment) => {
+              const statementId = `tarjeta-${accountId}-${getLocalDateString(installment.cutoffDate)}`;
+              linkedStatementAmounts.set(
+                statementId,
+                (linkedStatementAmounts.get(statementId) || 0) + installment.amount
+              );
+            });
+            const linkedStatements = [...linkedStatementAmounts.entries()].map(([id, amount]) => ({
+              id,
+              amount,
+              ref: doc(db, "obligaciones", id),
+            }));
+            const linkedStatementSnapshots = await Promise.all(
+              linkedStatements.map(({ ref }) => transaction.get(ref))
+            );
+            const linkedAccountIds = [...new Set(
+              linkedPayments.map((payment) => payment.cuentaId).filter(Boolean)
+            )];
+            const linkedAccountSnapshots = await Promise.all(linkedAccountIds.map((id) =>
+              id === accountId
+                ? Promise.resolve(accountSnapshot)
+                : transaction.get(doc(db, "cuentas", id))
+            ));
+            const accountDataById = new Map(linkedAccountIds.map((id, index) => [
+              id,
+              linkedAccountSnapshots[index].exists()
+                ? linkedAccountSnapshots[index].data()
+                : null,
+            ]));
+            accountDataById.set(accountId, accountSnapshot.data());
+            const accountChanges = new Map();
+            const originalAccount = accountSnapshot.data();
+            const purchaseValue = Number(movimiento.valor);
+            if (Number(originalAccount.deudaActual || 0) < purchaseValue) {
+              throw new Error("CREDIT_PURCHASE_ALREADY_SETTLED");
+            }
+            accountChanges.set(
+              accountId,
+              applyCreditPayment(originalAccount, purchaseValue)
+            );
+
+            linkedPayments.forEach((payment) => {
+              const paymentAccount = accountDataById.get(payment.cuentaId);
+              if (!paymentAccount ||
+                paymentAccount.usuarioId !== userId) {
+                throw new Error("CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE");
+              }
+              const amount = Number(payment.valor);
+              if (!Number.isSafeInteger(amount) || amount <= 0) {
+                throw new Error("CREDIT_PAYMENT_INVALID");
+              }
+              if (paymentAccount.tipoCuenta === "credito") {
+                const currentAccount = accountChanges.has(payment.cuentaId)
+                  ? { ...paymentAccount, ...accountChanges.get(payment.cuentaId) }
+                  : paymentAccount;
+                if (Number(currentAccount.deudaActual || 0) < amount) {
+                  throw new Error("CREDIT_PURCHASE_ALREADY_SETTLED");
+                }
+                accountChanges.set(payment.cuentaId, applyCreditPayment(currentAccount, amount));
+              } else {
+                const currentBalance = Number(paymentAccount.saldo || 0);
+                const currentChange = accountChanges.get(payment.cuentaId);
+                accountChanges.set(payment.cuentaId, {
+                  saldo: Number(currentChange?.saldo ?? currentBalance) + amount,
+                });
+              }
+            });
+
+            accountChanges.forEach((changes, id) => {
+              transaction.update(doc(db, "cuentas", id), {
+                ...changes,
+                ultimaActualizacion: new Date(),
+              });
+            });
+            linkedStatements.forEach((statement, index) => {
+              const snapshot = linkedStatementSnapshots[index];
+              if (!snapshot.exists()) return;
+              const currentStatement = snapshot.data();
+              if (currentStatement.usuarioId !== userId ||
+                currentStatement.tipo !== "pago_tarjeta") {
+                throw new Error("CREDIT_STATEMENT_UNAVAILABLE");
+              }
+              const value = Math.max(0, Number(currentStatement.valor || 0) - statement.amount);
+              const remaining = Math.max(
+                0,
+                Number(currentStatement.montoPendiente ?? currentStatement.valor ?? 0) -
+                  statement.amount
+              );
+              if (value === 0) {
+                transaction.delete(statement.ref);
+              } else {
+                transaction.update(statement.ref, {
+                  valor: value,
+                  montoPendiente: remaining,
+                  activa: remaining > 0,
+                  anulada: remaining <= 0,
+                  cuotasCompra: (currentStatement.cuotasCompra || [])
+                    .filter((installment) => installment.deudaId !== movimiento.deudaId),
+                  ultimaActualizacion: new Date(),
+                });
+              }
+            });
+            transaction.delete(debtRef);
+            transaction.delete(obligationRef);
+            linkedPaymentSnapshots.forEach((snapshot) => transaction.delete(snapshot.ref));
+            transaction.delete(doc(db, "movimientos", movimiento.id));
+
+            updatedAccounts = [...accountChanges.entries()].map(([id, changes]) => ({
+              id,
+              ...changes,
+            }));
+            deletedPaymentIds = [...linkedPaymentSnapshots.keys()];
+          });
+
+          setAccounts((previous) => previous.map((account) => {
+            const updated = updatedAccounts.find((item) => item.id === account.id);
+            return updated ? { ...account, ...updated } : account;
+          }));
+          setMovementsById((previous) => previous.filter((item) =>
+            item.id !== movimiento.id && !deletedPaymentIds.includes(item.id)
+          ));
+          setMovementsByUsuarioId((previous) => previous.filter((item) =>
+            item.id !== movimiento.id && !deletedPaymentIds.includes(item.id)
+          ));
+          setDebts((previous) => previous.filter((debt) => debt.id !== movimiento.deudaId));
+          showToast("Compra revertida; se eliminaron la deuda y su obligación", "success");
+          return;
+        }
+
+        if (isCreditPurchase && movimiento.obligacionId) {
+          const accountRef = doc(db, "cuentas", movimiento.cuentaId);
+          let availableAfter = 0;
+          let debtAfter = 0;
+          await runTransaction(db, async (transaction) => {
+            const accountSnapshot = await transaction.get(accountRef);
+            if (!accountSnapshot.exists()) throw new Error("CUENTA_NO_ENCONTRADA");
+            const accountData = accountSnapshot.data();
+            if (accountData.usuarioId !== (movimiento.usuarioId || movimiento.userId) ||
+              accountData.tipoCuenta !== "credito") {
+              throw new Error("CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE");
+            }
+            const purchaseDate = getMovementDate(movimiento);
+            const installmentCount = Number(movimiento.cuotas || 1);
+            const schedule = getCreditInstallmentSchedule(
+              accountData,
+              Number(movimiento.valor),
+              installmentCount,
+              purchaseDate
+            );
+            if (!schedule) throw new Error("CREDIT_STATEMENT_UNAVAILABLE");
+            const statements = schedule.map((installment) => {
+              const cutoffDate = getLocalDateString(installment.cutoffDate);
+              const id = `tarjeta-${movimiento.cuentaId}-${cutoffDate}`;
+              return {
+                id,
+                amount: installment.amount,
+                ref: doc(db, "obligaciones", id),
+              };
+            });
+            const statementSnapshots = await Promise.all(
+              statements.map(({ ref }) => transaction.get(ref))
+            );
+            const creditChanges = applyCreditPayment(accountData, Number(movimiento.valor));
+            availableAfter = creditChanges.saldo;
+            debtAfter = creditChanges.deudaActual;
+
+            statements.forEach((statement, index) => {
+              const snapshot = statementSnapshots[index];
+              if (!snapshot.exists()) return;
+              const currentStatement = snapshot.data();
+              if (currentStatement.usuarioId !== (movimiento.usuarioId || movimiento.userId) ||
+                currentStatement.tarjetaId !== movimiento.cuentaId) {
+                throw new Error("CREDIT_STATEMENT_UNAVAILABLE");
+              }
+              const value = Math.max(0, Number(currentStatement.valor || 0) - statement.amount);
+              const remaining = Math.max(
+                0,
+                Number(currentStatement.montoPendiente ?? currentStatement.valor ?? 0) -
+                  statement.amount
+              );
+              if (value === 0) {
+                transaction.delete(statement.ref);
+              } else {
+                transaction.update(statement.ref, {
+                  valor: value,
+                  montoPendiente: remaining,
+                  activa: remaining > 0,
+                  anulada: remaining <= 0,
+                  ultimaActualizacion: new Date(),
+                });
+              }
+            });
+            transaction.update(accountRef, {
+              saldo: availableAfter,
+              deudaActual: debtAfter,
+              ultimaActualizacion: new Date(),
+            });
+            transaction.delete(doc(db, "movimientos", movimiento.id));
+          });
+
+          setAccounts((previous) => previous.map((account) =>
+            account.id === movimiento.cuentaId
+              ? { ...account, saldo: availableAfter, deudaActual: debtAfter }
+              : account
+          ));
+          if (movimiento._source === "userId") {
+            setMovementsById((previous) => previous.filter((item) => item.id !== movimiento.id));
+          } else {
+            setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
+          }
+          showToast("Compra revertida; se eliminaron sus cuotas de los extractos", "success");
+          return;
+        }
+
         const obligationRef = (isCreditPurchase || isCreditAdvance) && movimiento.obligacionId
           ? doc(db, "obligaciones", movimiento.obligacionId)
           : null;
@@ -590,6 +901,12 @@ const VerMovimientos = ({ isOpen, onClose }) => {
           ? "No se puede revertir: el destino ya no tiene ese saldo disponible"
           : error.message === "SALDO_INGRESO_INSUFICIENTE"
           ? "No se puede eliminar: la cuenta no tiene saldo suficiente para revertir el ingreso"
+          : error.message === "CREDIT_PURCHASE_ALREADY_SETTLED"
+          ? "No se puede revertir: parte de la deuda de la tarjeta ya fue pagada por fuera de esta obligación"
+          : error.message === "CREDIT_DEBT_UNAVAILABLE" ||
+            error.message === "CREDIT_OBLIGATION_UNAVAILABLE" ||
+            error.message === "CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE"
+          ? "No se pudo encontrar la deuda, su obligación o una cuenta asociada al pago"
           : "No se pudo eliminar el movimiento",
         "error"
       );

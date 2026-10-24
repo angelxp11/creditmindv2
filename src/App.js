@@ -14,6 +14,7 @@ import VerMovimientos from "./components/movimientos/vermovimientos/vermovimient
 import Ingresos from "./components/movimientos/ingresos/ingresos";
 import Transferencia from "./components/movimientos/ingresos/tranferencia/transferencia";
 import Obligaciones from "./components/movimientos/obligaciones/obligaciones";
+import Lugar from "./components/lugares/lugar";
 
 import Loading from "./resources/loading/loading";
 import ToastContainer from "./resources/toastcontainer/ToastContainer";
@@ -33,6 +34,7 @@ function App() {
   const [showIngresos, setShowIngresos] = useState(false);
   const [showTransferencia, setShowTransferencia] = useState(false);
   const [showObligaciones, setShowObligaciones] = useState(false);
+  const [showLugares, setShowLugares] = useState(false);
 
   const [modalData, setModalData] = useState({
     title: "",
@@ -85,6 +87,7 @@ function App() {
               setShowVerMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenDeudas={() => {
               setShowDeudas(true);
@@ -94,6 +97,7 @@ function App() {
               setShowVerMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenMovimientos={() => {
               setShowMovimientos(true);
@@ -104,6 +108,7 @@ function App() {
               setShowVerMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenPresupuesto={() => {
               setShowPresupuesto(true);
@@ -114,6 +119,7 @@ function App() {
               setShowVerMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenIngresos={() => {
               setShowIngresos(true);
@@ -124,6 +130,7 @@ function App() {
               setShowMovimientos(false);
               setShowVerMovimientos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenVerMovimientos={() => {
               setShowVerMovimientos(true);
@@ -134,6 +141,7 @@ function App() {
               setShowMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
             }}
             onOpenTransferencia={() => {
               setShowTransferencia(true);
@@ -144,6 +152,7 @@ function App() {
               setShowDeudas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);
+              setShowLugares(false);
             }}
             onGoHome={() => {
               setShowCuentas(false);
@@ -154,6 +163,7 @@ function App() {
               setShowIngresos(false);
               setShowTransferencia(false);
               setShowObligaciones(false);
+              setShowLugares(false);
             }}
             onOpenObligaciones={() => {
               setShowObligaciones(true);
@@ -164,6 +174,18 @@ function App() {
               setShowVerMovimientos(false);
               setShowIngresos(false);
               setShowTransferencia(false);
+              setShowLugares(false);
+            }}
+            onOpenLugares={() => {
+              setShowLugares(true);
+              setShowCuentas(false);
+              setShowDeudas(false);
+              setShowMovimientos(false);
+              setShowPresupuesto(false);
+              setShowVerMovimientos(false);
+              setShowIngresos(false);
+              setShowTransferencia(false);
+              setShowObligaciones(false);
             }}
           />
 
@@ -206,6 +228,7 @@ function App() {
             isOpen={showVerMovimientos}
             onClose={() => setShowVerMovimientos(false)}
           />
+          <Lugar isOpen={showLugares} />
 
           {!showCuentas &&
             !showDeudas &&
@@ -214,7 +237,8 @@ function App() {
             !showVerMovimientos &&
             !showIngresos &&
             !showTransferencia &&
-            !showObligaciones && <Home />}
+            !showObligaciones &&
+            !showLugares && <Home />}
 
           <PQR />
 

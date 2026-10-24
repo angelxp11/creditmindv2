@@ -716,12 +716,40 @@
   gap: 10px;
 }
 
+.mov-card-statement__full-payment {
+  border-color: rgba(34, 197, 94, 0.6);
+  background: var(--success);
+  color: #fff;
+}
+
 .mov-obligation-payment label {
   display: grid;
   gap: 5px;
   color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 700;
+}
+
+.mov-installment-preview {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+}
+
+.mov-installment-preview strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.mov-installment-preview span,
+.mov-installment-preview small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .mov-obligations__paid {
@@ -790,6 +818,85 @@
   background: var(--bg-secondary);
   color: var(--text-primary);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+}
+
+.mov-obligation-date-adjust {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  border: 1px solid rgba(34, 197, 94, 0.32);
+  border-radius: 13px;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), var(--bg-card) 70%);
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.mov-obligation-date-adjust:hover {
+  border-color: rgba(34, 197, 94, 0.65);
+  box-shadow: 0 5px 18px rgba(34, 197, 94, 0.1);
+  transform: translateY(-1px);
+}
+
+.mov-obligation-date-adjust input {
+  display: grid;
+  width: 23px;
+  height: 23px;
+  margin: 0;
+  appearance: none;
+  place-content: center;
+  flex: 0 0 23px;
+  border: 2px solid var(--text-muted);
+  border-radius: 7px;
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mov-obligation-date-adjust input::before {
+  width: 11px;
+  height: 6px;
+  border-bottom: 2px solid #fff;
+  border-left: 2px solid #fff;
+  content: "";
+  transform: rotate(-45deg) scale(0);
+  transition: transform 0.12s ease;
+}
+
+.mov-obligation-date-adjust input:checked {
+  border-color: var(--success, #22c55e);
+  background: var(--success, #22c55e);
+}
+
+.mov-obligation-date-adjust input:checked::before {
+  transform: rotate(-45deg) scale(1);
+}
+
+.mov-obligation-date-adjust input:focus-visible {
+  outline: 3px solid rgba(34, 197, 94, 0.28);
+  outline-offset: 2px;
+}
+
+.mov-obligation-date-adjust input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.mov-obligation-date-adjust span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mov-obligation-date-adjust strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+}
+
+.mov-obligation-date-adjust small {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
 }
 
 .mov-obligation-modal__header {

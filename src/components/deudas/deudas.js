@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Info } from "lucide-react";
 import { auth, db } from "../../server/api";
 import {
   collection,
@@ -61,6 +62,7 @@ const Deudas = ({ isOpen, onClose }) => {
     fechaSegundoPago: "",
   });
   const [editMenuOpenId, setEditMenuOpenId] = useState(null);
+  const [descriptionDebt, setDescriptionDebt] = useState(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -820,6 +822,7 @@ const Deudas = ({ isOpen, onClose }) => {
                     </th>
                     <th>Nombre</th>
                     <th>Monto total</th>
+                    <th>Pago mensual</th>
                     <th>Restante</th>
                     <th>Progreso</th>
                     <th>Próxima fecha</th>
@@ -846,8 +849,33 @@ const Deudas = ({ isOpen, onClose }) => {
                             <label className="cbx" htmlFor={`seleccionar-deuda-${deuda.id}`} />
                           </div>
                         </td>
-                        <td className={pagada ? "deuda-nombre--pagada" : ""}>{deuda.nombre}</td>
+                        <td className={pagada ? "deuda-nombre--pagada" : ""}>
+                          <span className="deudas-name-cell">
+                            {deuda.nombre}
+                            {(deuda.origen === "compra_tarjeta" || Array.isArray(deuda.tags)) && (
+                              <button
+                                className="deudas-info-button"
+                                type="button"
+                                aria-label={`Ver etiquetas de ${deuda.nombre}`}
+                                title="Ver etiquetas de la compra"
+                                onClick={() => setDescriptionDebt(deuda)}
+                              >
+                                <Info size={17} aria-hidden="true" />
+                              </button>
+                            )}
+                          </span>
+                        </td>
                         <td>${formatNumber(deuda.monto.toString())}</td>
+                        <td>
+                          {deuda.cuotas ? (
+                            <span className="deudas-installment">
+                              <strong>${formatNumber(String(
+                                deuda.valorCuota ?? deuda.valoresCuota?.[0] ?? 0
+                              ))}</strong>
+                              <small>Cuota {deuda.proximoPagoNumero || 1} de {deuda.cuotas}</small>
+                            </span>
+                          ) : "—"}
+                        </td>
                         <td>
                           {pagada ? (
                             <span className="deuda-badge--pagada">Saldada</span>
@@ -912,6 +940,39 @@ const Deudas = ({ isOpen, onClose }) => {
           </div>
         )}
       </div>
+
+      {descriptionDebt && (
+        <div className="deudas-modal-overlay" onClick={() => setDescriptionDebt(null)}>
+          <section
+            className="deudas-modal-content deudas-description-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deuda-description-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="deuda-description-title">{descriptionDebt.nombre}</h3>
+            <p>Etiquetas registradas para esta compra con tarjeta:</p>
+            {descriptionDebt.tags?.length ? (
+              <div className="deudas-description-tags">
+                {descriptionDebt.tags.map((tag, index) => (
+                  <span key={`${tag}-${index}`}>{tag}</span>
+                ))}
+              </div>
+            ) : (
+              <p>Esta compra no tenía etiquetas registradas.</p>
+            )}
+            <div className="deudas-modal-buttons">
+              <button
+                className="deudas-modal-btn deudas-modal-btn--secondary"
+                type="button"
+                onClick={() => setDescriptionDebt(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* MODAL DE PAGO */}
       {paymentModal.isOpen && (() => {

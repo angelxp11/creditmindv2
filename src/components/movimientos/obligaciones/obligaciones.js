@@ -3,7 +3,22 @@ import { addDoc, collection, deleteField, deleteDoc, doc, getDocs, query, runTra
 import { auth, db } from "../../../server/api";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
-import { formatObligationDate, formatObligationSchedule, getLocalDateString } from "./obligationUtils";
+import { getAccountCardImage } from "../../../resources/imagenes/tarjetas/accountCard";
+import {
+	getCreditMovementStatementAmount,
+	getCreditInstallmentSchedule,
+	getCreditStatementForPurchase,
+} from "../../cuentas/creditAccountUtils";
+import {
+	formatObligationDate,
+	formatObligationSchedule,
+	getDebtTotalAmount,
+	getLocalDateString,
+	getNextCardStatements,
+	getObligationAmount,
+	getUniqueDebtObligations,
+	sortObligationsByAmount,
+} from "./obligationUtils";
 import "./obligaciones.css";
 
 const initialForm = () => ({
@@ -28,6 +43,40 @@ const getDateForDay = (dateValue, day) => {
 	return `${year}-${String(month).padStart(2, "0")}-${String(selectedDay).padStart(2, "0")}`;
 };
 
+const getCardStatementCycles = (account) => {
+	const currentStatement = getCreditStatementForPurchase(account, new Date());
+	if (!currentStatement) return [];
+
+	return [-1, 0, 1].map((offset) => {
+		const cutoffMonth = new Date(
+			currentStatement.cutoffDate.getFullYear(),
+			currentStatement.cutoffDate.getMonth() + offset,
+			1
+		);
+		const schedule = getCreditInstallmentSchedule(
+			account,
+			1,
+			1,
+			cutoffMonth
+		);
+		if (!schedule) return null;
+		const cycle = schedule[0];
+		const cycleName = offset === -1 ? "Anterior" : offset === 0 ? "Vigente" : "Siguiente";
+		return {
+			...cycle,
+			key: getLocalDateString(cycle.cutoffDate),
+			name: cycleName,
+			label: `${cycleName} · ${formatObligationDate(getLocalDateString(cycle.startDate))} – ${formatObligationDate(getLocalDateString(cycle.cutoffDate))} · vence ${formatObligationDate(getLocalDateString(cycle.paymentDate))}`,
+		};
+	}).filter(Boolean);
+};
+
+const getMovementDate = (movement) => {
+	const value = movement.fechaHora || movement.fechaCreacion;
+	const date = typeof value?.toDate === "function" ? value.toDate() : new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date;
+};
+
 const initialIncomeForm = () => ({
 	nombre: "",
 	valor: "",
@@ -48,6 +97,9 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	const [recurringIncomes, setRecurringIncomes] = useState([]);
 	const [activeView, setActiveView] = useState("obligations");
 	const [loading, setLoading] = useState(false);
+	const [statementGeneratorOpen, setStatementGeneratorOpen] = useState(false);
+	const [statementAccountId, setStatementAccountId] = useState("");
+	const [statementCycleKey, setStatementCycleKey] = useState("");
 
 	useEffect(() => {
 		if (!isOpen) return;
@@ -84,8 +136,195 @@ const Obligaciones = ({ isOpen, onClose }) => {
 		setIncomeForm(initialIncomeForm());
 		setEditingIncomeId("");
 		setActiveView("obligations");
+		setStatementGeneratorOpen(false);
+		setStatementAccountId("");
+		setStatementCycleKey("");
 		fetchData();
 	}, [isOpen]);
+
+	const creditAccounts = accounts.filter((account) => account.tipoCuenta === "credito");
+	const selectedStatementAccount = creditAccounts.find((account) => account.id === statementAccountId);
+	const statementCycles = selectedStatementAccount
+		? getCardStatementCycles(selectedStatementAccount)
+		: [];
+	const selectedStatementCycle = statementCycles.find((cycle) => cycle.key === statementCycleKey);
+
+	const openStatementGenerator = () => {
+		const defaultAccount = creditAccounts[0];
+		const cycles = defaultAccount ? getCardStatementCycles(defaultAccount) : [];
+		setEditingId("");
+		setEditingIncomeId("");
+		setStatementAccountId(defaultAccount?.id || "");
+		setStatementCycleKey(cycles.find((cycle) => cycle.label.startsWith("Vigente"))?.key || "");
+		setStatementGeneratorOpen(true);
+	};
+
+	const generateCardStatement = async (event) => {
+		event.preventDefault();
+		const user = auth.currentUser;
+		const account = creditAccounts.find((item) => item.id === statementAccountId);
+		const cycle = getCardStatementCycles(account || {}).find((item) => item.key === statementCycleKey);
+		if (!user || !account || !cycle) {
+			showToast("Selecciona una tarjeta y un ciclo válido", "error");
+			return;
+		}
+
+		setLoading(true);
+		try {
+			const [userIdMovementsSnapshot, usuarioIdMovementsSnapshot] = await Promise.all([
+				getDocs(query(
+					collection(db, "movimientos"),
+					where("userId", "==", user.uid)
+				)),
+				getDocs(query(
+					collection(db, "movimientos"),
+					where("usuarioId", "==", user.uid)
+				)),
+			]);
+			const movementsById = new Map([
+				...userIdMovementsSnapshot.docs,
+				...usuarioIdMovementsSnapshot.docs,
+			].map((movementDoc) => [
+				movementDoc.id,
+				{ id: movementDoc.id, ...movementDoc.data() },
+			]));
+			const movements = [...movementsById.values()]
+				.filter((movement) =>
+					movement.cuentaId === account.id &&
+					["credito_compra", "credito_avance"].includes(movement.tipo) &&
+					movement.origen !== "obligacion"
+				);
+			const cycleInstallments = [];
+			const total = movements.reduce((sum, movement) => {
+				const purchaseDate = getMovementDate(movement);
+				if (!purchaseDate) {
+					throw new Error("INVALID_CARD_MOVEMENT");
+				}
+				const movementAmount = getCreditMovementStatementAmount(
+					account,
+					movement,
+					purchaseDate,
+					cycle.key
+				);
+				if (movement.tipo === "credito_compra" && movement.deudaId && movement.obligacionId) {
+					const schedule = getCreditInstallmentSchedule(
+						account,
+						Number(movement.valor),
+						Number(movement.cuotas || 1),
+						purchaseDate
+					);
+					if (!schedule) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+					schedule
+						.filter((installment) =>
+							getLocalDateString(installment.cutoffDate) === cycle.key
+						)
+						.forEach((installment) => cycleInstallments.push({
+							deudaId: movement.deudaId,
+							obligacionId: movement.obligacionId,
+							numero: installment.installment,
+							valor: installment.amount,
+						}));
+				}
+				return sum + movementAmount;
+			}, 0);
+
+			if (total <= 0) {
+				showToast("No hay movimientos de tarjeta para ese ciclo", "info");
+				return;
+			}
+
+			const cutoffDate = cycle.key;
+			const obligationId = `tarjeta-${account.id}-${cutoffDate}`;
+			const obligationRef = doc(db, "obligaciones", obligationId);
+			const savedObligation = await runTransaction(db, async (transaction) => {
+				const snapshot = await transaction.get(obligationRef);
+				const installmentObligationSnapshots = await Promise.all(
+					cycleInstallments.map((installment) =>
+						transaction.get(doc(db, "obligaciones", installment.obligacionId))
+					)
+				);
+				const previous = snapshot.exists() ? snapshot.data() : null;
+				if (previous && (
+					previous.usuarioId !== user.uid ||
+					previous.tarjetaId !== account.id ||
+					previous.tipo !== "pago_tarjeta"
+				)) {
+					throw new Error("CREDIT_OBLIGATION_CONFLICT");
+				}
+				const installmentLinks = cycleInstallments.map((installment, index) => {
+					const installmentObligationSnapshot = installmentObligationSnapshots[index];
+					if (!installmentObligationSnapshot.exists()) {
+						throw new Error("CREDIT_INSTALLMENT_LINK_UNAVAILABLE");
+					}
+					const installmentObligation = installmentObligationSnapshot.data();
+					if (installmentObligation.usuarioId !== user.uid ||
+						installmentObligation.deudaId !== installment.deudaId) {
+						throw new Error("CREDIT_INSTALLMENT_LINK_UNAVAILABLE");
+					}
+					return {
+						...installment,
+						pagada: Number(installmentObligation.proximoPagoNumero || 1) > installment.numero,
+					};
+				});
+				const recordedPayments = [...movementsById.values()].reduce((sum, movement) =>
+					sum + (movement.obligacionAbonos || []).reduce((movementSum, payment) =>
+						payment.obligacionId === obligationId
+							? movementSum + Number(payment.valor || 0)
+							: movementSum, 0
+					), 0);
+				const previousPaidAmount = previous
+					? Math.max(0, Number(previous.valor || 0) -
+						Number(previous.montoPendiente ?? previous.valor ?? 0))
+					: 0;
+				const paidAmount = Math.max(previousPaidAmount, recordedPayments);
+				const pendingAmount = Math.max(0, total - paidAmount);
+				const data = {
+					usuarioId: user.uid,
+					tipo: "pago_tarjeta",
+					nombre: `PAGO TARJETA ${account.nombre || account.banco || ""}`.trim(),
+					tarjetaId: account.id,
+					tarjetaNombre: account.nombre || "",
+					tarjetaBanco: account.banco || "",
+					cuentaNombre: `${account.banco || ""} · ${account.nombre || ""}`.trim(),
+					fechaInicioCiclo: getLocalDateString(cycle.startDate),
+					fechaCorte: cutoffDate,
+					fechaProximoPago: getLocalDateString(cycle.paymentDate),
+					diaVencimiento: Number(getLocalDateString(cycle.paymentDate).slice(-2)),
+					frecuencia: "mensual",
+					valor: total,
+					montoPendiente: pendingAmount,
+					activa: pendingAmount > 0,
+					anulada: pendingAmount <= 0,
+					cuotasCompra: installmentLinks,
+					...(previous?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+					ultimaActualizacion: serverTimestamp(),
+				};
+				transaction.set(obligationRef, data);
+				return { ...data, id: obligationId };
+			});
+			setObligations((current) => [
+				...current.filter((item) => item.id !== savedObligation.id),
+				savedObligation,
+			].sort((first, second) =>
+				String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
+			));
+			setStatementGeneratorOpen(false);
+			showToast("Extracto de tarjeta generado desde sus movimientos", "success");
+		} catch (error) {
+			console.error("Error generando extracto de tarjeta:", error);
+			showToast(error.message === "CREDIT_OBLIGATION_CONFLICT"
+				? "Ya existe una obligación distinta para ese ciclo"
+				: error.message === "CREDIT_INSTALLMENT_LINK_UNAVAILABLE"
+					? "No se pudo vincular una compra financiada con su deuda"
+				: error.message === "CREDIT_STATEMENT_DATES_UNAVAILABLE"
+					? "Configura las fechas de corte y pago de la tarjeta"
+					: error.message === "INVALID_CARD_MOVEMENT"
+						? "Hay movimientos de tarjeta con datos inválidos"
+						: "No se pudo generar el extracto de tarjeta", "error");
+		} finally {
+			setLoading(false);
+		}
+	};
 
 	const handleSubmit = async (event) => {
 		event.preventDefault();
@@ -106,11 +345,11 @@ const Obligaciones = ({ isOpen, onClose }) => {
 			showToast("Selecciona una cuenta para esta obligación", "error");
 			return;
 		}
-		if (!name || !Number.isSafeInteger(amount) || amount <= 0 || (!editingId && !firstPaymentDate)) {
+		if (!name || !Number.isSafeInteger(amount) || amount <= 0 || !firstPaymentDate) {
 			showToast("Completa todos los datos de la obligación", "error");
 			return;
 		}
-		if (!editingId && form.frecuencia === "quincenal") {
+		if (form.frecuencia === "quincenal") {
 			const firstDay = Number(firstPaymentDate.slice(-2));
 			const secondDay = Number(secondPaymentDate.slice(-2));
 			if (!secondPaymentDate || firstPaymentDate.slice(0, 7) !== secondPaymentDate.slice(0, 7) || firstDay >= secondDay) {
@@ -122,17 +361,55 @@ const Obligaciones = ({ isOpen, onClose }) => {
 		setLoading(true);
 		try {
 				if (editingId) {
+					const existingObligation = obligations.find((item) => item.id === editingId);
+					if (!existingObligation) {
+						throw new Error("OBLIGATION_UNAVAILABLE");
+					}
+					const dueDate = form.frecuencia === "quincenal" &&
+						Number(existingObligation.proximoPagoNumero || 1) === 2
+						? secondPaymentDate
+						: firstPaymentDate;
+					const dueDay = Number(firstPaymentDate.slice(-2));
+					const secondDueDay = form.frecuencia === "quincenal"
+						? Number(secondPaymentDate.slice(-2))
+						: null;
 					const updatedData = {
 						nombre: name,
 						valor: amount,
 						cuentaId: account.id,
 						cuentaBanco: account.banco || "",
 						cuentaNombre: account.nombre || "",
+						frecuencia: form.frecuencia,
+						fechaProximoPago: dueDate,
+						diaVencimiento: dueDay,
+						diaSegundoPago: secondDueDay,
+						proximoPagoNumero: existingObligation.frecuencia === form.frecuencia
+							? Number(existingObligation.proximoPagoNumero || 1)
+							: 1,
 						ultimaActualizacion: serverTimestamp(),
 					};
-					await updateDoc(doc(db, "obligaciones", editingId), updatedData);
+					const obligationRef = doc(db, "obligaciones", editingId);
+					const debtRef = existingObligation.deudaId
+						? doc(db, "deudas", existingObligation.deudaId)
+						: null;
+					await runTransaction(db, async (transaction) => {
+						const debtSnapshot = debtRef ? await transaction.get(debtRef) : null;
+						if (debtRef && (!debtSnapshot?.exists() ||
+							debtSnapshot.data().usuarioId !== user.uid)) {
+							throw new Error("OBLIGATION_DEBT_UNAVAILABLE");
+						}
+						transaction.update(obligationRef, updatedData);
+						if (debtRef) {
+							transaction.update(debtRef, {
+								proximaFechaPago: dueDate,
+								ultimaActualizacion: serverTimestamp(),
+							});
+						}
+					});
 					setObligations((current) => current.map((item) =>
 						item.id === editingId ? { ...item, ...updatedData } : item
+					).sort((first, second) =>
+						String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
 					));
 					setEditingId("");
 					showToast("Obligación actualizada", "success");
@@ -160,23 +437,35 @@ const Obligaciones = ({ isOpen, onClose }) => {
 				setForm(initialForm());
 		} catch (error) {
 			console.error("Error guardando obligación:", error);
-			showToast("No se pudo registrar la obligación", "error");
+			showToast(error.message === "OBLIGATION_DEBT_UNAVAILABLE"
+				? "No se pudo actualizar la fecha de la deuda asociada"
+				: "No se pudo guardar la obligación", "error");
 		} finally {
 			setLoading(false);
 		}
 	};
 
 	const editObligation = (obligation) => {
+		const nextDueDate = obligation.fechaProximoPago || getLocalDateString();
+		const frequency = obligation.frecuencia === "quincenal" ? "quincenal" : "mensual";
+		const firstDate = frequency === "quincenal"
+			? getDateForDay(nextDueDate, obligation.diaVencimiento || nextDueDate.slice(-2))
+			: nextDueDate;
+		const secondDate = frequency === "quincenal"
+			? getDateForDay(nextDueDate, obligation.diaSegundoPago || Number(nextDueDate.slice(-2)) + 15)
+			: "";
 		setActiveView("obligations");
+		setEditingIncomeId("");
+		setStatementGeneratorOpen(false);
 		setEditingId(obligation.id);
 		setForm({
 			nombre: obligation.nombre || "",
 			valor: formatMoneyInput(String(Number(obligation.valor || 0))),
 			cuentaId: obligation.cuentaId || "",
-			frecuencia: obligation.frecuencia || "mensual",
-			fechaProximoPago: obligation.fechaProximoPago || getLocalDateString(),
-			fechaPrimerPago: "",
-			fechaSegundoPago: "",
+			frecuencia: frequency,
+			fechaProximoPago: nextDueDate,
+			fechaPrimerPago: firstDate,
+			fechaSegundoPago: secondDate,
 		});
 	};
 
@@ -275,6 +564,8 @@ const Obligaciones = ({ isOpen, onClose }) => {
 		const nextDueDate = income.fechaProximoPago || getLocalDateString();
 		const frequency = income.frecuencia === "quincenal" ? "quincenal" : "mensual";
 		setActiveView("incomes");
+		setEditingId("");
+		setStatementGeneratorOpen(false);
 		setEditingIncomeId(income.id);
 		setIncomeForm({
 			nombre: income.nombre || "",
@@ -351,21 +642,29 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	};
 
 	const deleteObligation = async (obligation) => {
-		if (!window.confirm(`¿Seguro que deseas eliminar la obligación "${obligation.nombre}"?`)) return;
+		const isCardStatement = obligation.tipo === "pago_tarjeta";
+		const confirmation = isCardStatement
+			? `¿Eliminar el extracto de "${obligation.nombre}"? No se borrarán los movimientos y podrás volver a generarlo desde ellos.`
+			: `¿Seguro que deseas eliminar la obligación "${obligation.nombre}"?`;
+		if (!window.confirm(confirmation)) return;
 
 		setLoading(true);
 		try {
-			const batch = writeBatch(db);
-			batch.delete(doc(db, "obligaciones", obligation.id));
-			if (obligation.deudaId) {
-				batch.update(doc(db, "deudas", obligation.deudaId), {
-					obligacionId: deleteField(),
-					ultimaActualizacion: serverTimestamp(),
-				});
+			if (isCardStatement) {
+				await deleteDoc(doc(db, "obligaciones", obligation.id));
+			} else {
+				const batch = writeBatch(db);
+				batch.delete(doc(db, "obligaciones", obligation.id));
+				if (obligation.deudaId) {
+					batch.update(doc(db, "deudas", obligation.deudaId), {
+						obligacionId: deleteField(),
+						ultimaActualizacion: serverTimestamp(),
+					});
+				}
+				await batch.commit();
 			}
-			await batch.commit();
 			setObligations((current) => current.filter((item) => item.id !== obligation.id));
-			showToast("Obligación eliminada", "success");
+			showToast(isCardStatement ? "Extracto de tarjeta eliminado" : "Obligación eliminada", "success");
 		} catch (error) {
 			console.error("Error eliminando obligación:", error);
 			showToast("No se pudo eliminar la obligación", "error");
@@ -389,6 +688,200 @@ const Obligaciones = ({ isOpen, onClose }) => {
 			setLoading(false);
 		}
 	};
+
+	const uniqueObligations = getUniqueDebtObligations(obligations);
+	const activeRegularObligations = sortObligationsByAmount(uniqueObligations.filter((obligation) =>
+		obligation.tipo !== "pago_tarjeta" && obligation.activa
+	));
+	const activeCardStatements = sortObligationsByAmount(getNextCardStatements(uniqueObligations));
+	const pausedObligations = sortObligationsByAmount(uniqueObligations.filter((obligation) =>
+		obligation.tipo !== "pago_tarjeta" && !obligation.activa
+	));
+	const paidCardStatements = sortObligationsByAmount(uniqueObligations.filter((obligation) =>
+		obligation.tipo === "pago_tarjeta" && !obligation.activa
+	));
+
+	const renderObligationRows = (items) => items.map((obligation) => (
+		(() => {
+			const debtTotal = obligation.deudaId ? getDebtTotalAmount(obligation) : 0;
+			const debtRemaining = obligation.deudaId
+				? Math.max(0, Number(obligation.deudaRestante ?? debtTotal))
+				: 0;
+			const installmentCount = Math.max(
+				1,
+				Math.floor(Number(obligation.cuotas || obligation.valoresCuota?.length || 1)) || 1
+			);
+			const paidInstallments = obligation.deudaPagada
+				? installmentCount
+				: Math.min(installmentCount, Math.max(0, Number(obligation.proximoPagoNumero || 1) - 1));
+			return (
+				<article
+					className={`obligacion-row${obligation.activa ? "" : " obligacion-row--paused"}`}
+					key={obligation.id}
+				>
+					<div className="obligacion-row__details">
+						<strong>{obligation.nombre}</strong>
+						<span>
+							${getObligationAmount(obligation).toLocaleString("es-CO")}
+							{obligation.deudaId
+								? ` total · Cuota ${obligation.proximoPagoNumero || 1} de ${obligation.cuotas || obligation.valoresCuota?.length || 1}`
+								: obligation.tipo === "pago_tarjeta"
+									? ` pendiente del extracto · Corte ${formatObligationDate(obligation.fechaCorte)}`
+									: ""}
+							{" · "}{formatObligationSchedule(obligation)} · {obligation.cuentaNombre}
+						</span>
+						{obligation.deudaId && (
+							<div className="obligacion-debt-progress">
+								<div
+									className="obligacion-debt-progress__installments"
+									role="progressbar"
+									aria-label={`Cuotas pagadas de ${obligation.nombre}`}
+									aria-valuemin="0"
+									aria-valuemax={installmentCount}
+									aria-valuenow={paidInstallments}
+								>
+									{Array.from({ length: installmentCount }, (_, index) => (
+										<span
+											key={index}
+											className={index < paidInstallments
+												? "obligacion-debt-progress__slot obligacion-debt-progress__slot--paid"
+												: "obligacion-debt-progress__slot"}
+										/>
+									))}
+								</div>
+								<span>
+									Cuotas pagadas {paidInstallments} de {installmentCount}
+									{" · "}Pagado ${Math.max(0, debtTotal - debtRemaining).toLocaleString("es-CO")} de ${debtTotal.toLocaleString("es-CO")}
+									{" · "}Restante ${debtRemaining.toLocaleString("es-CO")}
+								</span>
+							</div>
+						)}
+						{obligation.fechaUltimoPeriodoPagado && (
+							<span>Periodo cubierto: {formatObligationDate(obligation.fechaUltimoPeriodoPagado)}</span>
+						)}
+						<span>
+							{obligation.deudaPagada
+								? "Deuda saldada"
+								: obligation.activa
+									? "Próximo vencimiento"
+									: obligation.tipo === "pago_tarjeta" ? "Extracto pagado" : "Pausada"}
+							{!obligation.deudaPagada && `: ${formatObligationDate(obligation.fechaProximoPago)}`}
+						</span>
+					</div>
+					{obligation.tipo !== "pago_tarjeta" && (
+						<>
+							<button
+								type="button"
+								onClick={() => toggleActive(obligation)}
+								disabled={loading || obligation.deudaPagada}
+							>
+								{obligation.deudaPagada ? "Saldada" : obligation.activa ? "Pausar" : "Reactivar"}
+							</button>
+							<button type="button" onClick={() => editObligation(obligation)} disabled={loading}>
+								Editar
+							</button>
+							<button
+								className="obligacion-row__delete"
+								type="button"
+								onClick={() => deleteObligation(obligation)}
+								disabled={loading}
+							>
+								Eliminar
+							</button>
+						</>
+					)}
+					{obligation.tipo === "pago_tarjeta" && (
+						<button
+							className="obligacion-row__delete"
+							type="button"
+							onClick={() => deleteObligation(obligation)}
+							disabled={loading}
+						>
+							Eliminar extracto
+						</button>
+					)}
+				</article>
+			);
+		})()
+	));
+
+	const renderObligationSection = (title, items, emptyMessage, id, defaultOpen = false) => (
+		<details className="obligaciones-group" open={defaultOpen}>
+			<summary className="obligaciones-list__heading">
+				<h3 id={id}>{title}</h3>
+				<span>{items.length}</span>
+			</summary>
+			<div className="obligaciones-group__content">
+				{items.length === 0
+					? <p className="obligaciones-empty">{emptyMessage}</p>
+					: renderObligationRows(items)}
+			</div>
+		</details>
+	);
+
+	const closeObligationEditor = () => {
+		setEditingId("");
+		setForm(initialForm());
+	};
+
+	const renderObligationFormFields = () => (
+		<>
+			<label>
+				<span>Nombre</span>
+				<input required value={form.nombre} onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value.toUpperCase() }))} placeholder="Arriendo" />
+			</label>
+			<label>
+				<span>Valor del pago</span>
+				<input required type="text" inputMode="numeric" pattern="[0-9.]+" value={form.valor} onChange={(event) => setForm((current) => ({ ...current, valor: formatMoneyInput(event.target.value) }))} placeholder="500.000" />
+			</label>
+			<label>
+				<span>Cuenta para pagar</span>
+				<select required value={form.cuentaId} onChange={(event) => setForm((current) => ({ ...current, cuentaId: event.target.value }))}>
+					<option value="">Selecciona una cuenta</option>
+					{accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").map((account) => (
+						<option key={account.id} value={account.id}>{account.banco} · {account.nombre}</option>
+					))}
+				</select>
+			</label>
+			<label>
+				<span>Frecuencia</span>
+				<select value={form.frecuencia} onChange={(event) => setForm((current) => ({ ...current, frecuencia: event.target.value }))}>
+					<option value="mensual">Mensual</option>
+					<option value="quincenal">Quincenal (cada 15 días)</option>
+				</select>
+			</label>
+			{form.frecuencia === "quincenal" ? (
+				<>
+					<label>
+						<span>Fecha del primer pago</span>
+						<input required type="date" value={form.fechaPrimerPago} onChange={(event) => setForm((current) => ({ ...current, fechaPrimerPago: event.target.value }))} />
+					</label>
+					<label>
+						<span>Fecha del segundo pago</span>
+						<input required type="date" value={form.fechaSegundoPago} onChange={(event) => setForm((current) => ({ ...current, fechaSegundoPago: event.target.value }))} />
+					</label>
+				</>
+			) : (
+				<label>
+					<span>Próximo vencimiento</span>
+					<input required type="date" value={form.fechaProximoPago} onChange={(event) => setForm((current) => ({ ...current, fechaProximoPago: event.target.value }))} />
+				</label>
+			)}
+			<div className="obligaciones-form__actions">
+				<button className="obligaciones-submit" type="submit" disabled={loading || accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").length === 0}>
+					{editingId ? "Guardar cambios" : "Registrar obligación"}
+				</button>
+				{editingId && (
+					<button className="obligaciones-cancel" type="button" onClick={closeObligationEditor} disabled={loading}>
+						Cancelar
+					</button>
+				)}
+			</div>
+			{accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").length === 0 && (
+				<p className="obligaciones-hint">Primero necesitas una cuenta de gastos para pagar obligaciones.</p>
+			)}
+		</>
+	);
 
 	const renderIncomeFields = () => (
 		<>
@@ -484,98 +977,61 @@ const Obligaciones = ({ isOpen, onClose }) => {
 
 				{activeView === "obligations" && (
 					<>
-						<form className="obligaciones-form" onSubmit={handleSubmit}>
-							<label>
-								<span>Nombre</span>
-								<input required value={form.nombre} onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value.toUpperCase() }))} placeholder="Arriendo" />
-							</label>
-							<label>
-								<span>Valor del pago</span>
-								<input required type="text" inputMode="numeric" pattern="[0-9.]+" value={form.valor} onChange={(event) => setForm((current) => ({ ...current, valor: formatMoneyInput(event.target.value) }))} placeholder="500.000" />
-							</label>
-							<label>
-								<span>Cuenta para pagar</span>
-								<select required value={form.cuentaId} onChange={(event) => setForm((current) => ({ ...current, cuentaId: event.target.value }))}>
-									<option value="">Selecciona una cuenta</option>
-									{accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").map((account) => (
-										<option key={account.id} value={account.id}>{account.banco} · {account.nombre}</option>
-									))}
-								</select>
-							</label>
-							<label>
-								<span>Frecuencia</span>
-								<select value={form.frecuencia} onChange={(event) => setForm((current) => ({ ...current, frecuencia: event.target.value }))}>
-									<option value="mensual">Mensual</option>
-									<option value="quincenal">Quincenal (cada 15 días)</option>
-								</select>
-							</label>
-							{form.frecuencia === "quincenal" ? (
-								<>
-									<label>
-										<span>Fecha del primer pago</span>
-										<input required type="date" value={form.fechaPrimerPago} onChange={(event) => setForm((current) => ({ ...current, fechaPrimerPago: event.target.value }))} />
-									</label>
-									<label>
-										<span>Fecha del segundo pago</span>
-										<input required type="date" value={form.fechaSegundoPago} onChange={(event) => setForm((current) => ({ ...current, fechaSegundoPago: event.target.value }))} />
-									</label>
-								</>
-							) : (
-								<label>
-									<span>Próximo vencimiento</span>
-									<input required type="date" value={form.fechaProximoPago} onChange={(event) => setForm((current) => ({ ...current, fechaProximoPago: event.target.value }))} />
-								</label>
-							)}
-							<button className="obligaciones-submit" type="submit" disabled={loading || accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").length === 0}>
-								Registrar obligación
+						{!editingId && (
+							<form className="obligaciones-form" onSubmit={handleSubmit}>
+								{renderObligationFormFields()}
+							</form>
+						)}
+						<div className="obligaciones-statement-tools">
+							<button
+								className="obligaciones-submit"
+								type="button"
+								onClick={openStatementGenerator}
+								disabled={loading || creditAccounts.length === 0}
+							>
+								CREAR EXTRACTO DE TARJETA
 							</button>
-							{accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").length === 0 && <p className="obligaciones-hint">Primero necesitas una cuenta de gastos para pagar obligaciones.</p>}
-						</form>
+							{creditAccounts.length === 0 && (
+								<p className="obligaciones-hint">No tienes tarjetas de crédito configuradas.</p>
+							)}
+						</div>
 						<section className="obligaciones-list" aria-labelledby="obligaciones-list-title">
-							<div className="obligaciones-list__heading">
+							<div className="obligaciones-list__heading obligaciones-list__heading--main">
 								<h2 id="obligaciones-list-title">Tus obligaciones</h2>
-								<span>{obligations.length}</span>
+								<span>{uniqueObligations.length} en total</span>
 							</div>
 							{obligations.length === 0 ? (
 								<p className="obligaciones-empty">Todavía no has registrado obligaciones.</p>
-							) : obligations.map((obligation) => (
-								<article className={`obligacion-row${obligation.activa ? "" : " obligacion-row--paused"}`} key={obligation.id}>
-									<div className="obligacion-row__details">
-										<strong>{obligation.nombre}</strong>
-										<span>
-											${Number(obligation.tipo === "pago_tarjeta"
-												? obligation.montoPendiente ?? obligation.valor ?? 0
-												: obligation.valor || 0).toLocaleString("es-CO")}
-											{obligation.deudaId
-												? ` por pago · Saldo de deuda: $${Number(obligation.deudaRestante || 0).toLocaleString("es-CO")}`
-												: obligation.tipo === "pago_tarjeta"
-													? ` pendiente del extracto · Corte ${formatObligationDate(obligation.fechaCorte)}`
-													: ""}
-											{" · "}{formatObligationSchedule(obligation)} · {obligation.cuentaNombre}
-										</span>
-										{obligation.fechaUltimoPeriodoPagado && (
-											<span>Periodo cubierto: {formatObligationDate(obligation.fechaUltimoPeriodoPagado)}</span>
-										)}
-										<span>
-											{obligation.deudaPagada ? "Deuda saldada" : obligation.activa ? "Próximo vencimiento" : obligation.tipo === "pago_tarjeta" ? "Extracto pagado" : "Pausada"}
-											{!obligation.deudaPagada && `: ${formatObligationDate(obligation.fechaProximoPago)}`}
-										</span>
-									</div>
-									{obligation.tipo !== "pago_tarjeta" && (
-										<>
-											<button type="button" onClick={() => toggleActive(obligation)} disabled={loading || obligation.deudaPagada}>
-												{obligation.deudaPagada ? "Saldada" : obligation.activa ? "Pausar" : "Reactivar"}
-											</button>
-											<button type="button" onClick={() => editObligation(obligation)} disabled={loading}>
-												Editar
-											</button>
-											<button className="obligacion-row__delete" type="button" onClick={() => deleteObligation(obligation)} disabled={loading}>
-												Eliminar
-											</button>
-										</>
+							) : (
+								<div className="obligaciones-groups">
+									{renderObligationSection(
+										"Obligaciones activas",
+										activeRegularObligations,
+										"No tienes obligaciones recurrentes activas.",
+										"active-obligations-title",
+										true
 									)}
-								</article>
-							))}
+									{renderObligationSection(
+										"Extractos de tarjetas pendientes",
+										activeCardStatements,
+										"No tienes extractos de tarjeta pendientes.",
+										"card-statements-title",
+										true
+									)}
+									{renderObligationSection(
+										"Pausadas o saldadas",
+										pausedObligations,
+										"No tienes obligaciones pausadas o saldadas.",
+										"paused-obligations-title"
+									)}
+									{renderObligationSection(
+										"Extractos de tarjetas pagados",
+										paidCardStatements,
+										"No tienes extractos de tarjeta pagados.",
+										"paid-card-statements-title"
+									)}
+								</div>
+							)}
 						</section>
 					</>
 				)}
@@ -614,8 +1070,13 @@ const Obligaciones = ({ isOpen, onClose }) => {
 					</>
 				)}
 			</main>
-			{editingId && (
-				<div className="obligaciones-modal-overlay" onClick={() => !loading && setEditingId("")}>
+			{editingId && activeView === "obligations" && (
+				<div
+					className="obligaciones-modal-overlay"
+					onClick={(event) => {
+						if (event.target === event.currentTarget && !loading) closeObligationEditor();
+					}}
+				>
 					<form
 						className="obligaciones-edit-modal"
 						role="dialog"
@@ -627,34 +1088,140 @@ const Obligaciones = ({ isOpen, onClose }) => {
 						<header className="obligaciones-modal__header">
 							<div>
 								<h2 id="edit-obligation-title">Editar obligación</h2>
-								<p>Actualiza los datos sin cambiar su próximo vencimiento.</p>
+								<p>Edita todos los datos, incluida la frecuencia y la próxima fecha de vencimiento.</p>
 							</div>
-							<button type="button" className="obligaciones-modal__close" aria-label="Cerrar" disabled={loading} onClick={() => setEditingId("")}>×</button>
+							<button
+								type="button"
+								className="obligaciones-modal__close"
+								aria-label="Cerrar edición"
+								disabled={loading}
+								onClick={closeObligationEditor}
+							>
+								×
+							</button>
 						</header>
-						<label>
-							<span>Nombre</span>
-							<input required value={form.nombre} onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value.toUpperCase() }))} />
-						</label>
-						<label>
-							<span>Valor del pago</span>
-							<input required type="text" inputMode="numeric" pattern="[0-9.]+" value={form.valor} onChange={(event) => setForm((current) => ({ ...current, valor: formatMoneyInput(event.target.value) }))} />
-						</label>
-						<label>
-							<span>Cuenta para pagar</span>
-							<select required value={form.cuentaId} onChange={(event) => setForm((current) => ({ ...current, cuentaId: event.target.value }))}>
-								{accounts.filter((account) => (account.tipoCuenta || "gastos") === "gastos").map((account) => (
-									<option key={account.id} value={account.id}>{account.banco} · {account.nombre}</option>
-								))}
-							</select>
-						</label>
+						{renderObligationFormFields()}
+					</form>
+				</div>
+			)}
+			{statementGeneratorOpen && !editingId && !editingIncomeId && (
+				<div
+					className="obligaciones-modal-overlay"
+					onClick={(event) => {
+						if (event.target === event.currentTarget && !loading) setStatementGeneratorOpen(false);
+					}}
+				>
+					<form
+						className="obligaciones-edit-modal"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="statement-generator-title"
+						onClick={(event) => event.stopPropagation()}
+						onSubmit={generateCardStatement}
+					>
+						<header className="obligaciones-modal__header">
+							<div>
+								<h2 id="statement-generator-title">Crear extracto de tarjeta</h2>
+								<p>Elige una tarjeta y el extracto anterior, vigente o siguiente para reconstruirlo desde los movimientos.</p>
+							</div>
+							<button
+								type="button"
+								className="obligaciones-modal__close"
+								aria-label="Cerrar"
+								disabled={loading}
+								onClick={() => setStatementGeneratorOpen(false)}
+							>
+								×
+							</button>
+						</header>
+						<fieldset className="statement-card-options" aria-label="Selecciona una tarjeta de crédito">
+							<legend>Tarjeta de crédito</legend>
+							<div className="statement-card-options__grid" role="radiogroup">
+								{creditAccounts.map((account) => {
+									const selected = statementAccountId === account.id;
+									return (
+										<button
+											key={account.id}
+											className={`statement-card-option${selected ? " statement-card-option--selected" : ""}`}
+											type="button"
+											role="radio"
+											aria-checked={selected}
+											onClick={() => {
+												const cycles = getCardStatementCycles(account);
+												setStatementAccountId(account.id);
+												setStatementCycleKey(
+													cycles.find((cycle) => cycle.name === "Vigente")?.key || ""
+												);
+											}}
+										>
+											<img src={getAccountCardImage(account)} alt="" />
+											<span className="statement-card-option__details">
+												<strong>{account.nombre}</strong>
+												<span>{account.banco || "Tarjeta de crédito"}</span>
+												<span>
+													Corte día {account.fechaCorte || "—"} · Pago día {account.fechaLimitePago || "—"}
+												</span>
+											</span>
+											<span className="statement-card-option__radio" aria-hidden="true" />
+										</button>
+									);
+								})}
+							</div>
+						</fieldset>
+						<fieldset className="statement-cycle-options" aria-label="Selecciona el periodo del extracto">
+							<legend>Periodo del extracto</legend>
+							<div className="statement-cycle-options__grid" role="radiogroup">
+								{statementCycles.map((cycle) => {
+									const selected = statementCycleKey === cycle.key;
+									return (
+										<button
+											key={cycle.key}
+											className={`statement-cycle-option${selected ? " statement-cycle-option--selected" : ""}`}
+											type="button"
+											role="radio"
+											aria-checked={selected}
+											onClick={() => setStatementCycleKey(cycle.key)}
+										>
+											<span className="statement-cycle-option__radio" aria-hidden="true" />
+											<span className="statement-cycle-option__details">
+												<strong>{cycle.name}</strong>
+												<span>Corte: {formatObligationDate(getLocalDateString(cycle.cutoffDate))}</span>
+												<span>Vence: {formatObligationDate(getLocalDateString(cycle.paymentDate))}</span>
+												<small>
+													{formatObligationDate(getLocalDateString(cycle.startDate))} – {formatObligationDate(getLocalDateString(cycle.cutoffDate))}
+												</small>
+											</span>
+										</button>
+									);
+								})}
+							</div>
+						</fieldset>
+						{selectedStatementAccount && statementCycles.length === 0 && (
+							<p className="obligaciones-hint obligaciones-statement-hint">
+								Configura los días de corte y pago de esta tarjeta para reconstruir sus extractos.
+							</p>
+						)}
 						<div className="obligaciones-modal__actions">
-							<button className="obligaciones-submit" type="submit" disabled={loading}>Guardar cambios</button>
-							<button className="obligaciones-cancel" type="button" disabled={loading} onClick={() => setEditingId("")}>Cancelar</button>
+							<button
+								className="obligaciones-submit"
+								type="submit"
+								disabled={loading || !selectedStatementAccount || !selectedStatementCycle}
+							>
+								Generar obligación
+							</button>
+							<button
+								className="obligaciones-cancel"
+								type="button"
+								disabled={loading}
+								onClick={() => setStatementGeneratorOpen(false)}
+							>
+								Cancelar
+							</button>
 						</div>
 					</form>
 				</div>
 			)}
-			{editingIncomeId && (
+			{editingIncomeId && activeView === "incomes" && !editingId && (
 				<div className="obligaciones-modal-overlay" onClick={() => !loading && closeIncomeEditor()}>
 					<form
 						className="obligaciones-edit-modal obligaciones-edit-modal--income"

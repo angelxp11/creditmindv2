@@ -4,6 +4,7 @@ import { auth, db } from "../../server/api";
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   runTransaction,
@@ -12,17 +13,24 @@ import {
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
-import { formatObligationDate, formatObligationSchedule, getLocalDateString, isObligationDue } from "../movimientos/obligaciones/obligationUtils";
+import { formatObligationDate, formatObligationSchedule, getHomePendingObligations, getLocalDateString } from "../movimientos/obligaciones/obligationUtils";
 import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
-import { applyCreditPurchase, getCreditStatementForPurchase } from "../cuentas/creditAccountUtils";
+import {
+  addCreditInstallmentToStatement,
+  applyCreditPurchase,
+  getCreditInstallmentAmounts,
+  getCreditInstallmentSchedule,
+  getCreditUsageMetrics,
+  getCreditStatementForPurchase,
+} from "../cuentas/creditAccountUtils";
 import {
   findWalletAccount,
+  getShortcutTags,
   getShortcutTagSuggestions,
   parseShortcutMovement,
 } from "./shortcutUtils";
+import { resolvePlaceName } from "../lugares/lugarUtils";
 import "./home.css";
-
-const BAR_MAX_HEIGHT = 140; // px
 
 const getObligationMonth = (value) => {
   if (typeof value === "string") return value.slice(0, 7);
@@ -131,7 +139,6 @@ const Home = () => {
   const [savingsAccounts, setSavingsAccounts] = useState([]);
   const [creditAccounts, setCreditAccounts] = useState([]);
   const [budgetedBalance, setBudgetedBalance] = useState(0);
-  const [budgetSpent, setBudgetSpent] = useState(0);
   const [activeBudgetRows, setActiveBudgetRows] = useState([]);
   const [pendingObligations, setPendingObligations] = useState([]);
   const [paidCardObligationsThisMonth, setPaidCardObligationsThisMonth] = useState([]);
@@ -144,12 +151,11 @@ const Home = () => {
   const [pendingBudgets, setPendingBudgets] = useState([]);
   const [movementHistory, setMovementHistory] = useState([]);
   const [categoryCatalog, setCategoryCatalog] = useState([]);
-  const [animate, setAnimate] = useState(false);
+  const [savedPlaces, setSavedPlaces] = useState([]);
   const totalAhorrado = savingsAccounts.reduce(
     (total, account) => total + (Number(account.saldo) || 0),
     0
   );
-
   useEffect(() => {
     if (!shortcutDraft) return undefined;
 
@@ -198,14 +204,7 @@ const Home = () => {
         const currentMonth = getLocalDateString().slice(0, 7);
         const allObligations = obligationsSnapshot.docs
           .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }));
-        setPendingObligations(allObligations
-          .filter((obligation) => obligation.activa && !obligation.anulada && (
-            obligation.tipo === "pago_tarjeta" || isObligationDue(
-              obligation.fechaProximoPago,
-              `${currentMonth}-31`
-            )
-          ))
-          .sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+        setPendingObligations(getHomePendingObligations(allObligations));
         setPaidCardObligationsThisMonth(allObligations
           .filter((obligation) => obligation.tipo === "pago_tarjeta" &&
             !obligation.activa &&
@@ -214,10 +213,11 @@ const Home = () => {
           .sort((a, b) => String(b.fechaUltimoPago).localeCompare(String(a.fechaUltimoPago))));
 
         if (account) {
-          const [budgetsSnapshot, categoriesSnapshot, movementsSnapshot] = await Promise.all([
+          const [budgetsSnapshot, categoriesSnapshot, movementsSnapshot, userSnapshot] = await Promise.all([
             getDocs(query(collection(db, "presupuestos"), where("usuarioId", "==", user.uid))),
             getDocs(query(collection(db, "categorias"), where("usuarioId", "==", user.uid))),
             getDocs(query(collection(db, "movimientos"), where("userId", "==", user.uid))),
+            getDoc(doc(db, "usuarios", user.uid)),
           ]);
           const pendingBudgets = budgetsSnapshot.docs
             .map((budgetDoc) => ({ id: budgetDoc.id, ...budgetDoc.data() }))
@@ -255,6 +255,8 @@ const Home = () => {
             ...categoryDoc.data(),
           }));
           setCategoryCatalog(categoryList);
+          const places = userSnapshot.data()?.lugares;
+          setSavedPlaces(Array.isArray(places) ? places : []);
           const allMovements = movementsSnapshot.docs.map((movementDoc) => movementDoc.data());
           setMovementHistory(allMovements);
           const matchingMovements = allMovements
@@ -271,17 +273,11 @@ const Home = () => {
               remaining: Number(budget.valor || 0) - spent,
             };
           });
-          const spentByBudget = activeBudgetRowsData.reduce(
-            (total, budget) => total + budget.spent,
-            0
-          );
-
           setBudgetedBalance(targetBudge);
-          setBudgetSpent(spentByBudget);
           setActiveBudgetRows(activeBudgetRowsData);
         } else {
           setBudgetedBalance(0);
-          setBudgetSpent(0);
+          setActiveBudgetRows([]);
         }
       } catch (error) {
         console.error("Error cargando la cuenta predeterminada:", error);
@@ -293,27 +289,31 @@ const Home = () => {
     fetchDefaultAccount();
   }, [user]);
 
-  // Dispara la animación de las barras una vez que ya hay datos pintados
-  useEffect(() => {
-    if (!loading) {
-      const timer = setTimeout(() => setAnimate(true), 80);
-      return () => clearTimeout(timer);
-    }
-  }, [loading]);
-
   const currentBalance = Number(defaultAccount?.saldo || 0);
-  const budgetTarget = Number(budgetedBalance || 0);
-  const budgetProgress = Number(budgetSpent || 0);
   const availableBalance = currentBalance - budgetedBalance;
   const formatMoney = (value) => Number(value || 0).toLocaleString("es-CO");
+  const shortcutInstallmentTotal = Number(shortcutDraft?.valor || 0);
+  const shortcutInstallmentCount = Number(shortcutDraft?.cuotas ?? 1);
+  const shortcutInstallmentAmounts = shortcutDraft &&
+    Number.isSafeInteger(shortcutInstallmentTotal) &&
+    shortcutInstallmentTotal > 0 &&
+    Number.isSafeInteger(shortcutInstallmentCount) &&
+    shortcutInstallmentCount > 1 &&
+    shortcutInstallmentCount <= shortcutInstallmentTotal &&
+    shortcutInstallmentCount <= 60
+    ? getCreditInstallmentAmounts(shortcutInstallmentTotal, shortcutInstallmentCount)
+    : [];
+  const shortcutMonthlyInstallment = shortcutInstallmentAmounts[0] || 0;
   const totalPendingObligations = pendingObligations.reduce(
-    (total, obligation) => total + (
+    (total, obligation) => total + (obligation.tipo === "pago_deuda" && obligation.deudaId
+      ? 0
+      : (
       Number(
         obligation.tipo === "pago_tarjeta"
           ? obligation.montoPendiente ?? obligation.valor
           : obligation.valor
       ) || 0
-    ),
+    )),
     0
   );
 
@@ -323,19 +323,30 @@ const Home = () => {
       return;
     }
 
-    setReadingShortcut(true);
     try {
-      const clipboardText = await navigator.clipboard.readText();
+      const clipboardRead = navigator.clipboard.readText();
+      setReadingShortcut(true);
+      const clipboardText = await clipboardRead;
       const shortcutMovement = parseShortcutMovement(clipboardText);
       const matchedAccount = findWalletAccount(accounts, shortcutMovement.tarjeta);
-      setSuggestedShortcutTags(getShortcutTagSuggestions(
+      const recognizedEstablishment =
+        resolvePlaceName(
+          shortcutMovement.establecimiento,
+          savedPlaces,
+          shortcutMovement.ubicacion
+        ) || shortcutMovement.establecimiento;
+      const matchingTags = getShortcutTagSuggestions(
         movementHistory,
         shortcutMovement.establecimiento,
-        shortcutMovement.valor
-      ));
+        shortcutMovement.valor,
+        [recognizedEstablishment],
+        savedPlaces,
+        shortcutMovement.ubicacion
+      );
+      setSuggestedShortcutTags(matchingTags);
       setShortcutDraft({
         ...shortcutMovement,
-        nombreEstablecimiento: shortcutMovement.establecimiento,
+        nombreEstablecimiento: recognizedEstablishment,
         cuentaId: matchedAccount?.id || "",
         walletAccountMatched: Boolean(matchedAccount),
         tags: [],
@@ -395,12 +406,12 @@ const Home = () => {
     const displayName = String(shortcutDraft.nombreEstablecimiento || "").trim().toUpperCase();
     const amount = Number(shortcutDraft.valor);
     const movementDate = new Date(shortcutDraft.fechaHora);
-    const tags = normalizeTagList(shortcutDraft.tags || []);
+    const tags = getShortcutTags(shortcutDraft.tags, newShortcutTag);
     const installments = Number(shortcutDraft.cuotas ?? 1);
     if (!legalName || !displayName || !Number.isSafeInteger(amount) || amount <= 0 ||
       Number.isNaN(movementDate.getTime()) || movementDate > new Date() ||
       (account.tipoCuenta === "credito" &&
-        (!Number.isSafeInteger(installments) || installments < 1 || installments > 60))) {
+      (!Number.isSafeInteger(installments) || installments < 1 || installments > 60 || installments > amount))) {
       showToast("Revisa el establecimiento, el importe y la fecha del movimiento", "error");
       return;
     }
@@ -445,50 +456,186 @@ const Home = () => {
 
         if (currentAccount.tipoCuenta === "credito") {
           const creditChanges = applyCreditPurchase(currentAccount, amount);
-          const statementDates = getCreditStatementForPurchase(currentAccount, movementDate);
-          if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
-          const startDate = getLocalDateString(statementDates.startDate);
-          const cutoffDate = getLocalDateString(statementDates.cutoffDate);
-          const paymentDate = getLocalDateString(statementDates.paymentDate);
-          const obligationId = `tarjeta-${account.id}-${cutoffDate}`;
-          const obligationRef = doc(db, "obligaciones", obligationId);
-          const obligationSnapshot = await transaction.get(obligationRef);
-          const previousObligation = obligationSnapshot.exists() ? obligationSnapshot.data() : null;
-          if (previousObligation && (
-            previousObligation.usuarioId !== user.uid ||
-            previousObligation.tarjetaId !== account.id
-          )) {
-            throw new Error("CREDIT_OBLIGATION_CONFLICT");
+          const schedule = getCreditInstallmentSchedule(
+            currentAccount,
+            amount,
+            installments,
+            movementDate
+          );
+          if (!schedule) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+          const firstInstallment = schedule[0];
+          if (installments === 1) {
+            const statementDates = getCreditStatementForPurchase(currentAccount, movementDate);
+            if (!statementDates) throw new Error("CREDIT_STATEMENT_DATES_UNAVAILABLE");
+            const startDate = getLocalDateString(statementDates.startDate);
+            const cutoffDate = getLocalDateString(statementDates.cutoffDate);
+            const paymentDate = getLocalDateString(statementDates.paymentDate);
+            const obligationId = `tarjeta-${account.id}-${cutoffDate}`;
+            const obligationRef = doc(db, "obligaciones", obligationId);
+            const obligationSnapshot = await transaction.get(obligationRef);
+            const previousObligation = obligationSnapshot.exists()
+              ? obligationSnapshot.data()
+              : null;
+            if (previousObligation && (
+              previousObligation.usuarioId !== user.uid ||
+              previousObligation.tarjetaId !== account.id
+            )) {
+              throw new Error("CREDIT_OBLIGATION_CONFLICT");
+            }
+            const statementTotal = Number(previousObligation?.valor || 0) + amount;
+            const statementRemaining =
+              Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + amount;
+            const obligation = {
+              usuarioId: user.uid,
+              tipo: "pago_tarjeta",
+              nombre: `PAGO TARJETA ${currentAccount.nombre || currentAccount.banco || ""}`.trim(),
+              tarjetaId: account.id,
+              tarjetaNombre: currentAccount.nombre || "",
+              tarjetaBanco: currentAccount.banco || "",
+              cuentaNombre: `${currentAccount.banco || ""} · ${currentAccount.nombre || ""}`.trim(),
+              fechaInicioCiclo: startDate,
+              fechaCorte: cutoffDate,
+              fechaProximoPago: paymentDate,
+              diaVencimiento: Number(paymentDate.slice(-2)),
+              frecuencia: "mensual",
+              valor: statementTotal,
+              montoPendiente: statementRemaining,
+              activa: statementRemaining > 0,
+              anulada: false,
+              ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+              ultimaActualizacion: serverTimestamp(),
+            };
+
+            transaction.update(accountRef, {
+              ...creditChanges,
+              ultimaActualizacion: serverTimestamp(),
+            });
+            transaction.set(obligationRef, obligation);
+            transaction.set(movementRef, {
+              ...movement,
+              tipo: "credito_compra",
+              origen: "tarjeta_credito",
+              cuotas: 1,
+              obligacionId: obligationId,
+              fechaCorteTarjeta: cutoffDate,
+              fechaLimitePagoTarjeta: paymentDate,
+            });
+            return {
+              accountId: account.id,
+              saldo: creditChanges.saldo,
+              deudaActual: creditChanges.deudaActual,
+              obligation: { ...obligation, id: obligationId },
+              installmentAmount: firstInstallment.amount,
+            };
           }
 
-          const totalStatement = Number(previousObligation?.valor || 0) + amount;
-          const remainingStatement =
-            Number(previousObligation?.montoPendiente ?? previousObligation?.valor ?? 0) + amount;
+          const debtId = movementRef.id;
+          const obligationId = `deuda-tarjeta-${movementRef.id}`;
+          const debtRef = doc(db, "deudas", debtId);
+          const obligationRef = doc(db, "obligaciones", obligationId);
+          const firstDueDate = getLocalDateString(firstInstallment.paymentDate);
+          const installmentStatements = schedule.map((installment) => {
+            const startDate = getLocalDateString(installment.startDate);
+            const cutoffDate = getLocalDateString(installment.cutoffDate);
+            const paymentDate = getLocalDateString(installment.paymentDate);
+            const statementId = `tarjeta-${account.id}-${cutoffDate}`;
+            return {
+              installment,
+              startDate,
+              cutoffDate,
+              paymentDate,
+              ref: doc(db, "obligaciones", statementId),
+            };
+          });
+          const installmentStatementSnapshots = await Promise.all(
+            installmentStatements.map(({ ref }) => transaction.get(ref))
+          );
+          installmentStatements.forEach((statement, index) => {
+            const snapshot = installmentStatementSnapshots[index];
+            const previousStatement = snapshot.exists() ? snapshot.data() : null;
+            if (previousStatement && (
+              previousStatement.usuarioId !== user.uid ||
+              previousStatement.tarjetaId !== account.id ||
+              previousStatement.tipo !== "pago_tarjeta"
+            )) {
+              throw new Error("CREDIT_OBLIGATION_CONFLICT");
+            }
+            const statementTotals = addCreditInstallmentToStatement(
+              previousStatement,
+              statement.installment.amount,
+              {
+                deudaId: debtId,
+                obligacionId: obligationId,
+                numero: statement.installment.installment,
+                valor: statement.installment.amount,
+                pagada: false,
+              }
+            );
+            transaction.set(statement.ref, {
+              usuarioId: user.uid,
+              tipo: "pago_tarjeta",
+              nombre: `PAGO TARJETA ${currentAccount.nombre || currentAccount.banco || ""}`.trim(),
+              tarjetaId: account.id,
+              tarjetaNombre: currentAccount.nombre || "",
+              tarjetaBanco: currentAccount.banco || "",
+              cuentaNombre: `${currentAccount.banco || ""} · ${currentAccount.nombre || ""}`.trim(),
+              fechaInicioCiclo: statement.startDate,
+              fechaCorte: statement.cutoffDate,
+              fechaProximoPago: statement.paymentDate,
+              diaVencimiento: Number(statement.paymentDate.slice(-2)),
+              frecuencia: "mensual",
+              ...statementTotals,
+              ...(previousStatement?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
+              ultimaActualizacion: serverTimestamp(),
+            });
+          });
+          const debt = {
+            usuarioId: user.uid,
+            nombre: displayName,
+            monto: amount,
+            montoRestante: amount,
+            fechaAdquisicion: movementDate,
+            proximaFechaPago: firstDueDate,
+            tieneInteres: false,
+            pagada: false,
+            cuotas: installments,
+            valorCuota: firstInstallment.amount,
+            valoresCuota: schedule.map(({ amount: installmentAmount }) => installmentAmount),
+            tags,
+            cuentaId: account.id,
+            tarjetaId: account.id,
+            movimientoId: movementRef.id,
+            obligacionId: obligationId,
+            origen: "compra_tarjeta",
+            fechaCreacion: serverTimestamp(),
+            ultimaActualizacion: serverTimestamp(),
+          };
           const obligation = {
             usuarioId: user.uid,
-            tipo: "pago_tarjeta",
-            nombre: `PAGO TARJETA ${currentAccount.nombre || currentAccount.banco || ""}`.trim(),
-            tarjetaId: account.id,
-            tarjetaNombre: currentAccount.nombre || "",
-            tarjetaBanco: currentAccount.banco || "",
-            cuentaNombre: `${currentAccount.banco || ""} · ${currentAccount.nombre || ""}`.trim(),
-            fechaInicioCiclo: startDate,
-            fechaCorte: cutoffDate,
-            fechaProximoPago: paymentDate,
-            diaVencimiento: Number(paymentDate.slice(-2)),
+            tipo: "pago_deuda",
+            nombre: displayName,
+            valor: firstInstallment.amount,
+            cuentaId: account.id,
+            cuentaBanco: currentAccount.banco || "",
+            cuentaNombre: currentAccount.nombre || "",
             frecuencia: "mensual",
-            valor: totalStatement,
-            montoPendiente: remainingStatement,
-            activa: remainingStatement > 0,
-            anulada: false,
-            ...(previousObligation?.fechaCreacion ? {} : { fechaCreacion: serverTimestamp() }),
-            ultimaActualizacion: serverTimestamp(),
+            fechaProximoPago: firstDueDate,
+            diaVencimiento: Number(firstDueDate.slice(-2)),
+            proximoPagoNumero: 1,
+            deudaId: debtId,
+            deudaRestante: amount,
+            deudaPagada: false,
+            cuotas: installments,
+            valoresCuota: schedule.map(({ amount: installmentAmount }) => installmentAmount),
+            activa: true,
+            fechaCreacion: serverTimestamp(),
           };
 
           transaction.update(accountRef, {
             ...creditChanges,
             ultimaActualizacion: serverTimestamp(),
           });
+          transaction.set(debtRef, debt);
           transaction.set(obligationRef, obligation);
           transaction.set(movementRef, {
             ...movement,
@@ -497,15 +644,18 @@ const Home = () => {
             tipo: "credito_compra",
             origen: "tarjeta_credito",
             cuotas: installments,
+            valorCuota: firstInstallment.amount,
+            deudaId: debtId,
             obligacionId: obligationId,
-            fechaCorteTarjeta: cutoffDate,
-            fechaLimitePagoTarjeta: paymentDate,
+            fechaLimitePagoTarjeta: firstDueDate,
           });
           return {
             accountId: account.id,
             saldo: creditChanges.saldo,
             deudaActual: creditChanges.deudaActual,
+            debtId,
             obligation: { ...obligation, id: obligationId },
+            installmentAmount: firstInstallment.amount,
           };
         }
 
@@ -537,6 +687,9 @@ const Home = () => {
       if (defaultAccount?.id === saved.accountId) {
         setDefaultAccount((current) => current ? { ...current, saldo: saved.saldo } : current);
       }
+      if (isCreditAccount && installments > 1 && !saved.debtId) {
+        throw new Error("CREDIT_DEBT_NOT_CREATED");
+      }
       const savedMovement = {
         cuentaId: saved.accountId,
         valor: amount,
@@ -562,7 +715,6 @@ const Home = () => {
         return { ...row, spent, remaining: Number(budget.valor || 0) - spent };
       });
       setActiveBudgetRows(updatedBudgetRows);
-      setBudgetSpent(updatedBudgetRows.reduce((total, row) => total + row.spent, 0));
       if (saved.obligation) {
         setPendingObligations((current) => {
         return [
@@ -573,7 +725,9 @@ const Home = () => {
         );
         });
       }
-      showToast("Movimiento registrado correctamente", "success");
+      showToast(isCreditAccount && installments > 1
+        ? `Compra registrada como deuda: ${installments} cuotas mensuales de $${formatMoney(saved.installmentAmount)}`
+        : "Movimiento registrado correctamente", "success");
       setShortcutDraft(null);
       setNewShortcutTag("");
     } catch (error) {
@@ -583,67 +737,38 @@ const Home = () => {
         ACCOUNT_INVALID_TYPE: "Las cuentas de ahorros no se pueden usar para pagos",
         INSUFFICIENT_BALANCE: "El saldo de la cuenta ya no es suficiente",
         CREDIT_LIMIT_EXCEEDED: "La compra supera el cupo disponible de la tarjeta",
+        CREDIT_USAGE_LIMIT_EXCEEDED: "La compra supera el límite de uso configurado para la tarjeta",
         CREDIT_STATEMENT_DATES_UNAVAILABLE: "Configura las fechas de corte y pago de la tarjeta",
         CREDIT_OBLIGATION_CONFLICT: "No se pudo asociar la compra al extracto de esta tarjeta",
+        CREDIT_DEBT_NOT_CREATED: "No se confirmó la creación de la deuda de la compra",
       };
-      showToast(messages[error.message] || "No se pudo registrar el movimiento", "error");
+      showToast(
+        error.code === "permission-denied"
+          ? "Firebase denegó el registro; publica las reglas actualizadas de Firestore"
+          : messages[error.message] || "No se pudo registrar el movimiento",
+        "error"
+      );
     } finally {
       setSavingShortcut(false);
     }
   };
 
   const categoryPalette = [
-    "home-bar--category-1",
-    "home-bar--category-2",
-    "home-bar--category-3",
-    "home-bar--category-4",
-    "home-bar--category-5",
+    "home-budget-summary__dot--1",
+    "home-budget-summary__dot--2",
+    "home-budget-summary__dot--3",
+    "home-budget-summary__dot--4",
+    "home-budget-summary__dot--5",
   ];
-
-  const maxValue = Math.max(
-    currentBalance,
-    budgetTarget,
-    budgetProgress,
-    ...activeBudgetRows.flatMap((row) => [row.target, row.spent]),
-    Math.abs(availableBalance),
-    1
-  );
-
-  const getBarHeight = (value) => {
-    const pct = Math.max(Math.abs(value), 0) / maxValue;
-    const clamped = Math.max(pct, value === 0 ? 0.04 : pct);
-    return Math.round(clamped * BAR_MAX_HEIGHT);
-  };
-
-  const budgetBars = activeBudgetRows.length
-    ? activeBudgetRows.map((row, index) => ({
-        key: row.id,
-        label: row.name,
-        value: row.spent,
-        modifier: row.spent > row.target ? "home-bar--negative" : categoryPalette[index % categoryPalette.length],
-        target: row.target,
-        colorClass: categoryPalette[index % categoryPalette.length],
-      }))
-    : [
-        {
-          key: "reserved",
-          label: "Gasto del presupuesto",
-          value: budgetProgress,
-          modifier: budgetProgress > budgetTarget ? "home-bar--negative" : "home-bar--reserved",
-          target: budgetTarget,
-        },
-      ];
-
-  const bars = [
-    {
-      key: "current",
-      label: "Saldo actual",
-      value: currentBalance,
-      modifier: "home-bar--current",
-      target: null,
-    },
-    ...budgetBars,
-  ];
+  const frequentCreditAccounts = creditAccounts
+    .map((account) => ({
+      account,
+      usageCount: movementHistory.filter((movement) =>
+        movement.cuentaId === account.id &&
+        (movement.tipo === "credito_compra" || movement.tipo === "credito_avance")
+      ).length,
+    }))
+    .sort((first, second) => second.usageCount - first.usageCount);
 
   return (
     <div className="home-container">
@@ -659,46 +784,22 @@ const Home = () => {
         {defaultAccount ? (
           <>
           <div className="home-available" aria-live="polite">
-            <span className="home-available__label">Saldo disponible</span>
+            <div>
+              <span className="home-available__label">Saldo libre en tu cuenta</span>
+              <span className="home-available__hint">
+                Saldo actual ${formatMoney(currentBalance)} · Apartado en presupuestos ${formatMoney(budgetedBalance)}
+              </span>
+            </div>
             <strong className={availableBalance < 0 ? "home-available__value home-available__value--negative" : "home-available__value"}>
               ${formatMoney(availableBalance)}
             </strong>
           </div>
 
-          <div className="home-chart">
-            {bars.map((bar) => (
-              <div className="home-chart__column" key={bar.key}>
-                <span className="home-chart__value">
-                  ${formatMoney(bar.value)}
-                </span>
-                <div className="home-chart__track">
-                  {bar.target !== null && bar.target > 0 && (
-                    <div
-                      className={
-                        bar.value > bar.target
-                          ? "home-chart__budget-target home-chart__budget-target--over"
-                          : "home-chart__budget-target"
-                      }
-                      style={{
-                        height: animate ? `${getBarHeight(bar.target)}px` : "0px",
-                      }}
-                    />
-                  )}
-                  <div
-                    className={`home-chart__bar ${bar.modifier}`}
-                    style={{
-                      height: animate ? `${getBarHeight(bar.value)}px` : "0px",
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
           {activeBudgetRows.length > 0 && (
             <div className="home-budget-summary">
               <div className="home-budget-summary__header">
-                <span>Presupuestos creados</span>
+                <strong>Gasto de tus presupuestos</strong>
+                <span>Lo gastado frente al límite asignado</span>
               </div>
               <div className="home-budget-summary__list">
                 {activeBudgetRows.map((row, index) => (
@@ -706,30 +807,94 @@ const Home = () => {
                     <span className={`home-budget-summary__dot ${categoryPalette[index % categoryPalette.length]}`} />
                     <div className="home-budget-summary__meta">
                       <strong>{row.name}</strong>
-                      <span>
-                        ${formatMoney(row.spent)} / ${formatMoney(row.target)}
-                      </span>
+                      <span>Gastado ${formatMoney(row.spent)} de ${formatMoney(row.target)}</span>
+                      <div
+                        className="home-budget-summary__track"
+                        role="progressbar"
+                        aria-label={`Gastado del presupuesto ${row.name}`}
+                        aria-valuemin="0"
+                        aria-valuemax={Math.max(0, Number(row.target) || 0)}
+                        aria-valuenow={Math.min(Math.max(0, Number(row.spent) || 0), Math.max(0, Number(row.target) || 0))}
+                      >
+                        <span
+                          className={row.remaining < 0 ? "home-budget-summary__fill home-budget-summary__fill--over" : "home-budget-summary__fill"}
+                          style={{ width: `${row.target > 0 ? Math.min(100, Math.max(0, (row.spent / row.target) * 100)) : 0}%` }}
+                        />
+                      </div>
                     </div>
-                    <strong className={row.remaining < 0 ? "home-budget-summary__remaining home-budget-summary__remaining--negative" : "home-budget-summary__remaining"}>
-                      ${formatMoney(row.remaining)}
-                    </strong>
+                    <span className="home-budget-summary__remaining-wrap">
+                      <strong className={row.remaining < 0 ? "home-budget-summary__remaining home-budget-summary__remaining--negative" : "home-budget-summary__remaining"}>
+                        ${formatMoney(Math.abs(row.remaining))}
+                      </strong>
+                      <span>{row.remaining < 0 ? "Excedido" : "Restante"}</span>
+                    </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          <div className="home-balances">
-            {bars.map((bar) => (
-              <div className="home-balance-item" key={bar.key}>
-                <span className={`home-balance-item__dot ${bar.modifier}`} />
-                <span className="home-balance-item__content">
-                  <span className="home-balance-item__label">{bar.label}</span>
-                  <strong className="home-balance-item__value">${formatMoney(bar.value)}</strong>
-                </span>
+          {frequentCreditAccounts.length > 0 && (
+            <div className="home-credit-quickview">
+              <div className="home-credit-quickview__heading">
+                <strong>Uso de tus tarjetas</strong>
+                <span>Ordenadas por frecuencia de uso</span>
               </div>
-            ))}
-          </div>
+              <div className="home-credit-quickview__list">
+                {frequentCreditAccounts.map(({ account, usageCount }) => {
+                  const limit = Math.max(0, Number(account.limiteCredito) || 0);
+                  const debt = Math.max(0, Number(account.deudaActual) || 0);
+                  const usageMetrics = getCreditUsageMetrics(account);
+                  const spentWidth = limit > 0 ? Math.min(100, debt / limit * 100) : 0;
+                  const spendableAmount = Math.min(
+                    usageMetrics.remainingToSpend,
+                    Math.max(0, limit - debt)
+                  );
+                  const spendableWidth = limit > 0
+                    ? Math.min(100 - spentWidth, spendableAmount / limit * 100)
+                    : 0;
+                  const reservedAmount = limit > 0
+                    ? Math.max(0, limit - Math.min(debt, limit) - spendableAmount)
+                    : 0;
+                  const reservedWidth = limit > 0 ? reservedAmount / limit * 100 : 0;
+
+                  return (
+                    <article className="home-credit-quickview__item" key={account.id}>
+                      <img
+                        src={getAccountCardImage(account)}
+                        alt=""
+                        loading="lazy"
+                      />
+                      <div className="home-credit-quickview__details">
+                        <div className="home-credit-quickview__name">
+                          <strong>{account.nombre}</strong>
+                          <span>{account.banco} · {usageCount} {usageCount === 1 ? "uso" : "usos"}</span>
+                        </div>
+                        <div
+                          className="home-credit__track"
+                          role="progressbar"
+                          aria-label={`Uso del cupo de ${account.nombre}`}
+                          aria-valuemin="0"
+                          aria-valuemax="100"
+                          aria-valuenow={Math.round(spentWidth)}
+                          aria-valuetext={`Gastado: $${formatMoney(debt)}. Puedes gastar: $${formatMoney(spendableAmount)}. No puedes gastar: $${formatMoney(reservedAmount)}.`}
+                        >
+                          <span className="home-credit__track-spent" style={{ width: `${spentWidth}%` }} />
+                          <span className="home-credit__track-spendable" style={{ width: `${spendableWidth}%` }} />
+                          <span className="home-credit__track-reserved" style={{ width: `${reservedWidth}%` }} />
+                        </div>
+                        <div className="home-credit-quickview__amounts">
+                          <span>Gastado <strong>${formatMoney(debt)}</strong></span>
+                          <span>Puedes gastar <strong>${formatMoney(spendableAmount)}</strong></span>
+                          <span>No disponible <strong>${formatMoney(reservedAmount)}</strong></span>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </>
         ) : (
           <p className="home-empty">
@@ -744,7 +909,7 @@ const Home = () => {
             <span className="home-savings__eyebrow">Pagos recurrentes</span>
             <h2 id="home-obligations-title">Obligaciones por pagar</h2>
             <p className="home-obligations__description">
-              Las compras con tarjeta se acumulan por ciclo de corte y se pagan antes de la fecha límite.
+              Incluye pagos del mes y extractos pendientes de tus tarjetas de crédito.
             </p>
           </div>
           <span className="home-obligations__count">{pendingObligations.length}</span>
@@ -771,6 +936,12 @@ const Home = () => {
                     {" · "}{obligation.tipo === "pago_tarjeta"
                       ? `${obligation.tarjetaBanco || ""} ${obligation.tarjetaNombre || ""}`.trim()
                       : obligation.cuentaNombre}
+                    {obligation.deudaId && obligation.cuotas
+                      ? ` · Cuota ${obligation.proximoPagoNumero || 1} de ${obligation.cuotas}`
+                      : ""}
+                    {obligation.deudaId && obligation.cuotas
+                      ? " · Esta cuota ya está incluida en el extracto de la tarjeta"
+                      : ""}
                   </span>
                 </div>
                 {obligation.tipo === "pago_tarjeta" ? (
@@ -783,9 +954,16 @@ const Home = () => {
                     </span>
                   </div>
                 ) : (
-                  <strong className="home-obligation__amount">
-                    ${Number(obligation.valor || 0).toLocaleString("es-CO")}
-                  </strong>
+                  <div className="home-obligation__totals">
+                    <strong className="home-obligation__amount">
+                      Cuota: ${Number(obligation.valor || 0).toLocaleString("es-CO")}
+                    </strong>
+                    {obligation.deudaId && obligation.cuotas && (
+                      <span className="home-obligation__remaining">
+                        Incluida en el extracto de la tarjeta
+                      </span>
+                    )}
+                  </div>
                 )}
               </article>
             ))}
@@ -866,6 +1044,19 @@ const Home = () => {
               const limit = Number(account.limiteCredito || 0);
               const debt = Number(account.deudaActual || 0);
               const utilization = limit > 0 ? Math.min(100, (debt / limit) * 100) : 0;
+              const usageMetrics = getCreditUsageMetrics(account);
+              const spentWidth = limit > 0 ? utilization : 0;
+              const spendableAmount = Math.min(
+                usageMetrics.remainingToSpend,
+                Math.max(0, limit - debt)
+              );
+              const spendableWidth = limit > 0
+                ? Math.min(100 - spentWidth, (spendableAmount / limit) * 100)
+                : 0;
+              const amountShownAsReserved = limit > 0
+                ? Math.max(0, limit - Math.min(debt, limit) - spendableAmount)
+                : 0;
+              const reservedWidth = limit > 0 ? (amountShownAsReserved / limit) * 100 : 0;
               return (
                 <article className="home-credit__item" key={account.id}>
                   <img
@@ -879,9 +1070,23 @@ const Home = () => {
                       <strong>{account.nombre}</strong>
                       <span>{account.banco}</span>
                     </div>
-                    <div className="home-credit__amounts">
-                      <span>Deuda <strong>${formatMoney(debt)}</strong></span>
-                      <span>Disponible <strong>${formatMoney(account.saldo)}</strong></span>
+                    <div className="home-credit__usage-heading">
+                      <strong>Uso del cupo</strong>
+                      <span>Cupo total · ${formatMoney(limit)}</span>
+                    </div>
+                    <div className="home-credit__usage-values">
+                      <div className="home-credit__usage-value home-credit__usage-value--spent">
+                        <span>Gastado</span>
+                        <strong>${formatMoney(debt)}</strong>
+                      </div>
+                      <div className="home-credit__usage-value home-credit__usage-value--spendable">
+                        <span>Puedes gastar</span>
+                        <strong>${formatMoney(spendableAmount)}</strong>
+                      </div>
+                      <div className="home-credit__usage-value home-credit__usage-value--reserved">
+                        <span>No puedes gastar</span>
+                        <strong>${formatMoney(amountShownAsReserved)}</strong>
+                      </div>
                     </div>
                     <div
                       className="home-credit__track"
@@ -890,10 +1095,15 @@ const Home = () => {
                       aria-valuemin="0"
                       aria-valuemax="100"
                       aria-valuenow={Math.round(utilization)}
+                      aria-valuetext={`Gastado: $${formatMoney(debt)}. Puedes gastar: $${formatMoney(spendableAmount)}. Reservado, no gastar: $${formatMoney(amountShownAsReserved)}.`}
                     >
-                      <span style={{ width: `${utilization}%` }} />
+                      <span className="home-credit__track-spent" style={{ width: `${spentWidth}%` }} />
+                      <span className="home-credit__track-spendable" style={{ width: `${spendableWidth}%` }} />
+                      <span className="home-credit__track-reserved" style={{ width: `${reservedWidth}%` }} />
                     </div>
-                    <span className="home-credit__limit">Cupo total · ${formatMoney(limit)}</span>
+                    <span className="home-credit__usage-limit">
+                      Tope configurado: {usageMetrics.usagePercentage}% · ${formatMoney(usageMetrics.allowedDebt)}
+                    </span>
                     <div className="home-credit__conditions">
                       <span>Fecha de corte <strong>{account.fechaCorte ? `Día ${account.fechaCorte}` : "Sin configurar"}</strong></span>
                       <span>Límite de pago <strong>{account.fechaLimitePago ? `Día ${account.fechaLimitePago}` : "Sin configurar"}</strong></span>
@@ -1007,6 +1217,18 @@ const Home = () => {
                     }}
                     disabled={savingShortcut}
                   />
+                  {shortcutInstallmentAmounts.length > 0 && (
+                    <small className="home-shortcut-installment-preview">
+                      <strong>
+                        {shortcutInstallmentCount} cuotas · desde ${formatMoney(shortcutMonthlyInstallment)} al mes
+                      </strong>
+                      Total financiado: ${formatMoney(shortcutInstallmentTotal)}
+                      {shortcutInstallmentAmounts.some((amount) => amount !== shortcutMonthlyInstallment) &&
+                        ` · Cuotas: ${shortcutInstallmentAmounts.map((amount, index) =>
+                          `${index + 1}: $${formatMoney(amount)}`
+                        ).join(" · ")}`}
+                    </small>
+                  )}
                 </label>
               )}
               <label className="home-shortcut-modal__field">
@@ -1047,8 +1269,8 @@ const Home = () => {
                 <h3>Tags</h3>
                 <p>
                   {suggestedShortcutTags.length > 0
-                    ? "Sugeridos por el historial de este establecimiento e importe."
-                    : "No hay tags anteriores para este establecimiento. Puedes crear los tuyos."}
+                    ? "Tags existentes. Los más similares a este movimiento aparecen primero."
+                    : "Aún no hay tags guardados. Puedes crear uno escribiéndolo abajo."}
                 </p>
               </div>
               {suggestedShortcutTags.length > 0 && (

@@ -168,6 +168,12 @@
   background: color-mix(in srgb, var(--bg-card) 55%, transparent);
 }
 
+.cuentas-credit-terms .form-group small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
 .cuentas-credit-available {
   grid-column: 1 / -1;
   margin: 0;
@@ -198,7 +204,7 @@
 
 .cuentas-card-picker__options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   max-width: 760px;
 }
@@ -693,6 +699,7 @@
   }
 
   .cuentas-card-picker__options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     max-width: none;
   }

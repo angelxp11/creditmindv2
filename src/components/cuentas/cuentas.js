@@ -23,6 +23,7 @@ const initialForm = {
   saldo: "",
   limiteCredito: "",
   deudaActual: "",
+  porcentajeUsoMaximo: "100",
   fechaCorte: "",
   fechaLimitePago: "",
   tasaInteresMensual: "",
@@ -109,6 +110,14 @@ const Cuentas = ({ isOpen, onClose }) => {
     return;
   }
 
+  if (name === "porcentajeUsoMaximo") {
+    setFormValues((prev) => ({
+      ...prev,
+      [name]: value.replace(/\D/g, "").slice(0, 3),
+    }));
+    return;
+  }
+
   if (["fechaCorte", "fechaLimitePago"].includes(name)) {
     setFormValues((prev) => ({
       ...prev,
@@ -153,6 +162,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     const isCreditAccount = tipoCuenta === "credito";
     const limiteCredito = Number((formValues.limiteCredito || "").replace(/\./g, ""));
     const deudaActual = Number((formValues.deudaActual || "").replace(/\./g, ""));
+    const porcentajeUsoMaximo = Number(formValues.porcentajeUsoMaximo);
     const fechaCorte = Number(formValues.fechaCorte);
     const fechaLimitePago = Number(formValues.fechaLimitePago);
     const tasaInteresMensual = Number(formValues.tasaInteresMensual);
@@ -181,6 +191,14 @@ const Cuentas = ({ isOpen, onClose }) => {
       return;
     }
     if (isCreditAccount && (
+      !Number.isFinite(porcentajeUsoMaximo) ||
+      porcentajeUsoMaximo < 0 ||
+      porcentajeUsoMaximo > 100
+    )) {
+      showToast("El límite de uso debe estar entre 0 y 100%", "error");
+      return;
+    }
+    if (isCreditAccount && (
       !Number.isInteger(fechaCorte) || fechaCorte < 1 || fechaCorte > 31 ||
       !Number.isInteger(fechaLimitePago) || fechaLimitePago < 1 || fechaLimitePago > 31 ||
       formValues.tasaInteresMensual === "" || !Number.isFinite(tasaInteresMensual) || tasaInteresMensual < 0 ||
@@ -195,6 +213,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     const creditTerms = {
       limiteCredito: isCreditAccount ? limiteCredito : null,
       deudaActual: isCreditAccount ? deudaActual : null,
+      porcentajeUsoMaximo: isCreditAccount ? porcentajeUsoMaximo : null,
       fechaCorte: isCreditAccount ? fechaCorte : null,
       fechaLimitePago: isCreditAccount ? fechaLimitePago : null,
       tasaInteresMensual: isCreditAccount ? tasaInteresMensual : null,
@@ -277,6 +296,7 @@ const Cuentas = ({ isOpen, onClose }) => {
     saldo: account.tipoCuenta === "credito" ? "" : Number(account.saldo || 0).toLocaleString("es-CO"),
     limiteCredito: account.tipoCuenta === "credito" ? Number(account.limiteCredito || account.saldo || 0).toLocaleString("es-CO") : "",
     deudaActual: account.tipoCuenta === "credito" ? Number(account.deudaActual || 0).toLocaleString("es-CO") : "",
+    porcentajeUsoMaximo: account.porcentajeUsoMaximo ?? 100,
     fechaCorte: account.fechaCorte || "",
     fechaLimitePago: account.fechaLimitePago || "",
     tasaInteresMensual: account.tasaInteresMensual ?? "",
@@ -517,6 +537,21 @@ const Cuentas = ({ isOpen, onClose }) => {
               <div className="form-group">
                 <label htmlFor="deudaActual">Deuda actual</label>
                 <input id="deudaActual" name="deudaActual" type="text" inputMode="numeric" value={formValues.deudaActual} onChange={handleChange} placeholder="0" />
+              </div>
+              <div className="form-group">
+                <label htmlFor="porcentajeUsoMaximo">Límite máximo de uso del cupo (%)</label>
+                <input
+                  id="porcentajeUsoMaximo"
+                  name="porcentajeUsoMaximo"
+                  type="number"
+                  inputMode="numeric"
+                  min="0"
+                  max="100"
+                  required
+                  value={formValues.porcentajeUsoMaximo}
+                  onChange={handleChange}
+                />
+                <small>Por ejemplo, 40% limita la deuda a ese porcentaje del cupo total.</small>
               </div>
               <div className="cuentas-credit-terms">
                 <div className="form-group">
