@@ -22,3 +22,13 @@ export const getAccountCardKey = (accountType) =>
 
 export const getAccountCardImage = (account) =>
   cardImages[account?.imagenTarjeta] || cardImages[getAccountCardKey(account?.tipoCuenta)];
+
+export const preloadAccountCardImages = (accounts = []) => {
+  if (typeof window === "undefined" || accounts.length === 0) return;
+
+  const imageUrls = new Set(accounts.map(getAccountCardImage));
+  imageUrls.forEach((imageUrl) => {
+    const preloadedImage = new window.Image();
+    preloadedImage.src = imageUrl;
+  });
+};

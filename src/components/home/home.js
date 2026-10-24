@@ -14,7 +14,7 @@ import {
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
 import { formatObligationDate, formatObligationSchedule, getHomePendingObligations, getLocalDateString } from "../movimientos/obligaciones/obligationUtils";
-import { getAccountCardImage } from "../../resources/imagenes/tarjetas/accountCard";
+import { getAccountCardImage, preloadAccountCardImages } from "../../resources/imagenes/tarjetas/accountCard";
 import {
   addCreditInstallmentToStatement,
   applyCreditPurchase,
@@ -184,6 +184,7 @@ const Home = () => {
         const accountDocs = accountsSnapshot.docs
           .map((accountDoc) => ({ id: accountDoc.id, ...accountDoc.data() }))
           .sort((a, b) => (b.fechaCreacion?.toMillis?.() ?? 0) - (a.fechaCreacion?.toMillis?.() ?? 0));
+        preloadAccountCardImages(accountDocs);
         setAccounts(accountDocs);
         const account = accountDocs.find(
           (accountDoc) =>
