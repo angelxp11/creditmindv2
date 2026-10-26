@@ -49,6 +49,7 @@ const Cuentas = ({ isOpen, onClose }) => {
   const [liquidationAccountId, setLiquidationAccountId] = useState("");
   const [liquidationDestinationId, setLiquidationDestinationId] = useState("");
   const [liquidationAmount, setLiquidationAmount] = useState("");
+  const [liquidationInterest, setLiquidationInterest] = useState("0");
 
   useEffect(() => {
     if (!isOpen) {
@@ -353,18 +354,18 @@ const Cuentas = ({ isOpen, onClose }) => {
   };
 
   const handleOpenLiquidation = (account) => {
-    const destinations = accounts.filter(
-      (candidate) => candidate.id !== account.id && candidate.tipoCuenta !== "credito"
-    );
     setLiquidationAccountId(account.id);
-    setLiquidationDestinationId(destinations[0]?.id || "");
+    setLiquidationDestinationId("");
     setLiquidationAmount(Number(account.saldo || 0).toLocaleString("es-CO"));
+    setLiquidationInterest("0");
   };
 
   const handleLiquidateSavings = async (event) => {
     event.preventDefault();
     const user = auth.currentUser;
-    const receivedAmount = Number(liquidationAmount.replace(/\./g, ""));
+    const withdrawalAmount = Number(liquidationAmount.replace(/\./g, ""));
+    const interestAmount = Number(liquidationInterest.replace(/\./g, ""));
+    const receivedAmount = withdrawalAmount + interestAmount;
     const source = accounts.find((account) => account.id === liquidationAccountId);
     const destination = accounts.find((account) => account.id === liquidationDestinationId);
 
@@ -380,8 +381,12 @@ const Cuentas = ({ isOpen, onClose }) => {
       showToast("Selecciona una cuenta de destino válida", "error");
       return;
     }
-    if (!Number.isSafeInteger(receivedAmount) || receivedAmount <= 0) {
-      showToast("Ingresa el valor total recibido, incluidos los intereses", "error");
+    if (!Number.isSafeInteger(withdrawalAmount) || withdrawalAmount <= 0) {
+      showToast("Ingresa un valor válido para retirar", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(interestAmount) || interestAmount < 0 || !Number.isSafeInteger(receivedAmount)) {
+      showToast("Ingresa un valor válido para los intereses", "error");
       return;
     }
 
@@ -415,12 +420,15 @@ const Cuentas = ({ isOpen, onClose }) => {
         if (!Number.isSafeInteger(sourceBalance) || sourceBalance <= 0) {
           throw new Error("EMPTY_SAVINGS");
         }
+        if (withdrawalAmount > sourceBalance) {
+          throw new Error("AMOUNT_EXCEEDS_SAVINGS");
+        }
         if (!Number.isSafeInteger(destinationBalance + receivedAmount)) {
           throw new Error("INVALID_DESTINATION_BALANCE");
         }
 
         transaction.update(sourceRef, {
-          saldo: 0,
+          saldo: sourceBalance - withdrawalAmount,
           ultimaActualizacion: serverTimestamp(),
         });
         transaction.update(destinationRef, {
@@ -438,16 +446,19 @@ const Cuentas = ({ isOpen, onClose }) => {
           cuentaDestinoNombre: destinationData.nombre || "",
           tipo: "transferencia",
           origen: "liquidacion_alcancia",
-          valor: sourceBalance,
+          valor: withdrawalAmount,
           valorDestino: receivedAmount,
-          descripcion: "LIQUIDACIÓN DE ALCANCÍA (INCLUYE INTERESES)",
+          valorIntereses: interestAmount,
+          descripcion: interestAmount > 0
+            ? "RETIRO DE ALCANCÍA (INCLUYE INTERESES)"
+            : "RETIRO DE ALCANCÍA",
           fechaHora: new Date(),
           fechaCreacion: serverTimestamp(),
         });
       });
 
       setAccounts((current) => current.map((account) => {
-        if (account.id === source.id) return { ...account, saldo: 0 };
+        if (account.id === source.id) return { ...account, saldo: sourceBalance - withdrawalAmount };
         if (account.id === destination.id) {
           return { ...account, saldo: destinationBalance + receivedAmount };
         }
@@ -456,11 +467,14 @@ const Cuentas = ({ isOpen, onClose }) => {
       setLiquidationAccountId("");
       setLiquidationDestinationId("");
       setLiquidationAmount("");
-      showToast("Alcancía liquidada y dinero transferido correctamente", "success");
+      setLiquidationInterest("0");
+      showToast("Retiro de la alcancía registrado correctamente", "success");
     } catch (error) {
       console.error("Error liquidando alcancía:", error);
       if (error.message === "EMPTY_SAVINGS") {
         showToast("La alcancía no tiene saldo para liquidar", "error");
+      } else if (error.message === "AMOUNT_EXCEEDS_SAVINGS") {
+        showToast("El valor a retirar no puede superar el saldo de la alcancía", "error");
       } else if (error.message === "ACCOUNT_UNAVAILABLE") {
         showToast("La alcancía o la cuenta de destino ya no está disponible", "error");
       } else if (error.message === "INVALID_DESTINATION_BALANCE") {
@@ -727,9 +741,9 @@ const Cuentas = ({ isOpen, onClose }) => {
               <div>
                 <h3 id="liquidation-title">Liquidar alcancía</h3>
                 <p>
-                  Se transferirá todo el saldo de{" "}
+                  Puedes retirar una parte o todo el saldo de{" "}
                   <strong>{accounts.find((account) => account.id === liquidationAccountId)?.nombre}</strong>.
-                  Ingresa el total recibido, incluidos intereses o cargos.
+                  Los intereses se sumarán al valor transferido, sin descontarse del saldo de la alcancía.
                 </p>
               </div>
               <button
@@ -742,26 +756,28 @@ const Cuentas = ({ isOpen, onClose }) => {
                 ×
               </button>
             </div>
-            <label className="form-group" htmlFor="liquidationDestination">
-              Cuenta de destino
+            <label className="form-group cuentas-liquidation__destination" htmlFor="liquidationDestination">
+              <span>¿A dónde quieres enviar el dinero?</span>
+              <small>Selecciona la cuenta que recibirá el retiro y los intereses.</small>
               <select
                 id="liquidationDestination"
+                className="cuentas-liquidation__destination-select"
                 required
                 value={liquidationDestinationId}
                 onChange={(event) => setLiquidationDestinationId(event.target.value)}
               >
-                <option value="">Selecciona una cuenta</option>
+                <option value="" disabled>Selecciona una cuenta de destino</option>
                 {accounts
                   .filter((account) => account.id !== liquidationAccountId && account.tipoCuenta !== "credito")
                   .map((account) => (
                     <option key={account.id} value={account.id}>
-                      {account.banco} · {account.nombre}
+                      {account.banco} · {account.nombre} · Saldo: ${Number(account.saldo || 0).toLocaleString("es-CO")}
                     </option>
                   ))}
               </select>
             </label>
             <label className="form-group" htmlFor="liquidationAmount">
-              Total recibido (incluye intereses)
+              Valor a retirar de la alcancía
               <input
                 id="liquidationAmount"
                 required
@@ -774,6 +790,23 @@ const Cuentas = ({ isOpen, onClose }) => {
                 }}
               />
             </label>
+            <label className="form-group" htmlFor="liquidationInterest">
+              Intereses recibidos
+              <input
+                id="liquidationInterest"
+                type="text"
+                inputMode="numeric"
+                value={liquidationInterest}
+                onChange={(event) => {
+                  const digits = event.target.value.replace(/\D/g, "");
+                  setLiquidationInterest(digits.replace(/\B(?=(\d{3})+(?!\d))/g, "."));
+                }}
+              />
+            </label>
+            <p className="cuentas-liquidation__total">
+              Total que recibirá la cuenta: $
+              {(Number(liquidationAmount.replace(/\./g, "")) + Number(liquidationInterest.replace(/\./g, ""))).toLocaleString("es-CO")}
+            </p>
             <div className="cuentas-liquidation__actions">
               <button className="cuentas-submit" type="submit" disabled={loading || !liquidationDestinationId}>
                 Confirmar liquidación

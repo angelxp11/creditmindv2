@@ -527,6 +527,13 @@
   color: var(--text-primary);
 }
 
+.cuentas-liquidation .cuentas-liquidation__total {
+  grid-column: 1 / -1;
+  margin: -8px 0 0;
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
 .cuentas-liquidation__close {
   flex: 0 0 auto;
   width: 38px;
@@ -546,6 +553,39 @@
   font-size: 0.92rem;
   font-weight: 600;
   line-height: 1.3;
+}
+
+.cuentas-liquidation .cuentas-liquidation__destination {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-card));
+}
+
+.cuentas-liquidation__destination > span {
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.cuentas-liquidation__destination small {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
+.cuentas-liquidation .cuentas-liquidation__destination-select {
+  min-height: 54px;
+  border: 2px solid var(--accent-color);
+  background-color: var(--bg-card);
+  font-weight: 600;
+}
+
+.cuentas-liquidation .cuentas-liquidation__destination-select:invalid {
+  color: var(--text-muted);
 }
 
 .cuentas-liquidation__actions {
