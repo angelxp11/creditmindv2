@@ -390,7 +390,8 @@
 /* Acciones de fila */
 
 .cuentas-edit,
-.cuentas-liquidate {
+.cuentas-liquidate,
+.cuentas-pay-card {
   min-height: 38px;
   padding: 8px 14px;
   border-radius: var(--cuentas-radius-sm);
@@ -426,6 +427,54 @@
 .cuentas-liquidate:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.cuentas-pay-card {
+  margin-left: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card));
+  color: var(--accent-color);
+}
+
+.cuentas-pay-card:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color) 20%, var(--bg-card));
+}
+
+.cuentas-pay-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cuentas-card-payment__options {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cuentas-card-payment__options button {
+  min-height: 46px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cuentas-card-payment__options button.is-selected {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card));
+  color: var(--accent-color);
+}
+
+.cuentas-card-payment .form-group small {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 400;
 }
 
 /* Cuenta predeterminada */
@@ -878,7 +927,8 @@
   }
 
   .cuentas-edit,
-  .cuentas-liquidate {
+  .cuentas-liquidate,
+  .cuentas-pay-card {
     flex: 1 1 140px;
     min-height: 44px;
     margin-left: 0;

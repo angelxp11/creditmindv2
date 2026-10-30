@@ -16,6 +16,8 @@ import {
 	getLocalDateString,
 	getNextCardStatements,
 	getObligationAmount,
+	getObligationIncomePlan,
+	getMonthlyCommitmentSummary,
 	getUniqueDebtObligations,
 	sortObligationsByAmount,
 } from "./obligationUtils";
@@ -96,6 +98,8 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	const [editingIncomeId, setEditingIncomeId] = useState("");
 	const [recurringIncomes, setRecurringIncomes] = useState([]);
 	const [activeView, setActiveView] = useState("obligations");
+	const [obligationPlanMode, setObligationPlanMode] = useState("incomePlan");
+	const [compensateIncomeSurplus, setCompensateIncomeSurplus] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [statementGeneratorOpen, setStatementGeneratorOpen] = useState(false);
 	const [statementAccountId, setStatementAccountId] = useState("");
@@ -700,6 +704,16 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	const paidCardStatements = sortObligationsByAmount(uniqueObligations.filter((obligation) =>
 		obligation.tipo === "pago_tarjeta" && !obligation.activa
 	));
+	const incomePlan = getObligationIncomePlan(
+		uniqueObligations,
+		recurringIncomes,
+		getLocalDateString(),
+		compensateIncomeSurplus
+	);
+	const monthlyCommitment = getMonthlyCommitmentSummary(
+		[...activeRegularObligations, ...activeCardStatements],
+		recurringIncomes
+	);
 
 	const renderObligationRows = (items) => items.map((obligation) => (
 		(() => {
@@ -1000,6 +1014,169 @@ const Obligaciones = ({ isOpen, onClose }) => {
 								<h2 id="obligaciones-list-title">Tus obligaciones</h2>
 								<span>{uniqueObligations.length} en total</span>
 							</div>
+							<section className="obligaciones-income-plan" aria-labelledby="income-plan-title">
+								<div className="obligaciones-plan-switch" role="tablist" aria-label="Vista de obligaciones">
+									<button
+										className={obligationPlanMode === "incomePlan" ? "is-selected" : ""}
+										type="button"
+										role="tab"
+										aria-selected={obligationPlanMode === "incomePlan"}
+										onClick={() => setObligationPlanMode("incomePlan")}
+									>
+										Plan por ingresos
+									</button>
+									<button
+										className={obligationPlanMode === "monthlyCommitment" ? "is-selected" : ""}
+										type="button"
+										role="tab"
+										aria-selected={obligationPlanMode === "monthlyCommitment"}
+										onClick={() => setObligationPlanMode("monthlyCommitment")}
+									>
+										Compromiso mensual
+									</button>
+								</div>
+								{obligationPlanMode === "incomePlan" ? (
+									<>
+										<label className={`obligaciones-compensate${compensateIncomeSurplus ? " is-enabled" : ""}`}>
+											<input
+												type="checkbox"
+												checked={compensateIncomeSurplus}
+												onChange={(event) => setCompensateIncomeSurplus(event.target.checked)}
+											/>
+											<span className="obligaciones-compensate__copy">
+												<strong>Compensar sobrantes</strong>
+												<small>Usar solo ingresos de hoy en adelante. El excedente pasa al siguiente pago y lo que sobre queda disponible para ahorrar o usar.</small>
+											</span>
+											<span className="obligaciones-compensate__switch" aria-hidden="true">
+												<span />
+											</span>
+										</label>
+										<div className="obligaciones-list__heading">
+											<div>
+												<h3 id="income-plan-title">Plan según tus ingresos</h3>
+												<p>Proyección del próximo mes y los vencimientos del 1 al 14 del siguiente: el ingreso del 30 cubre del 1 al 14 siguiente y los vencimientos del 30 en adelante; el del 15 cubre del 15 al 29. Si falta el ingreso de una fecha, sus pagos quedan sin asignar. No se mueve dinero.</p>
+											</div>
+										</div>
+										{incomePlan.allocations.length === 0 && incomePlan.unassigned.length === 0 ? (
+											<p className="obligaciones-empty">
+												Registra ingresos recurrentes y obligaciones activas para ver cómo se distribuyen.
+											</p>
+										) : (
+											<>
+												{incomePlan.allocations.map((plan) => (
+													<details className="obligaciones-income-plan__group" key={plan.date}>
+														<summary>
+															<div>
+																<strong>Ingreso del {formatObligationDate(plan.date)}</strong>
+																<span>{plan.incomeNames.join(" · ")}</span>
+															</div>
+															<div className="obligaciones-income-plan__totals">
+																<span>Previsto ${plan.amount.toLocaleString("es-CO")}</span>
+																{plan.carryIn > 0 && (
+																	<span>
+																		+ Sobrante anterior ${plan.carryIn.toLocaleString("es-CO")}
+																	</span>
+																)}
+																{compensateIncomeSurplus && (
+																	<strong>
+																		Disponible ${plan.availableAmount.toLocaleString("es-CO")}
+																	</strong>
+																)}
+																{plan.shortfall > 0 ? (
+																	<strong className="obligaciones-income-plan__shortfall">
+																		Faltan ${plan.shortfall.toLocaleString("es-CO")}
+																	</strong>
+																) : compensateIncomeSurplus ? (
+																	<strong className="obligaciones-income-plan__covered">
+																		Disponible para ahorrar o usar: ${plan.remainingIncome.toLocaleString("es-CO")}
+																	</strong>
+																) : (
+																	<strong className="obligaciones-income-plan__covered">
+																		Cubierto
+																	</strong>
+																)}
+															</div>
+														</summary>
+														<ul>
+															{plan.obligations.map((obligation) => (
+																<li key={obligation.planId}>
+																	<span>
+																		{obligation.nombre}
+																		<small>Vence {formatObligationDate(obligation.fechaProximoPago)}</small>
+																	</span>
+																	<span>
+																		${obligation.plannedAmount.toLocaleString("es-CO")}
+																		{obligation.shortfall > 0 && (
+																			<small className="obligaciones-income-plan__shortfall">
+																				Faltan ${obligation.shortfall.toLocaleString("es-CO")}
+																			</small>
+																		)}
+																	</span>
+																</li>
+															))}
+														</ul>
+													</details>
+												))}
+												{incomePlan.unassigned.length > 0 && (
+													<div className="obligaciones-income-plan__unassigned">
+														<strong>Sin ingreso programado antes del vencimiento</strong>
+														{incomePlan.unassigned.map((obligation) => (
+															<span key={obligation.id}>
+																{obligation.nombre} · vence {formatObligationDate(obligation.fechaProximoPago)}
+															</span>
+														))}
+													</div>
+												)}
+											</>
+										)}
+									</>
+								) : (
+									<>
+										<div className="obligaciones-list__heading">
+											<div>
+												<h3 id="income-plan-title">Compromiso mensual</h3>
+												<p>Valores recurrentes normalizados por mes; cada ingreso u obligación quincenal cuenta dos veces. Es una estimación, no mueve dinero.</p>
+											</div>
+										</div>
+										<div className="obligaciones-monthly-summary">
+											<article>
+												<span>Ingresos mensuales</span>
+												<strong>${monthlyCommitment.monthlyIncome.toLocaleString("es-CO")}</strong>
+											</article>
+											<article>
+												<span>Comprometido en obligaciones</span>
+												<strong>${monthlyCommitment.monthlyObligations.toLocaleString("es-CO")}</strong>
+											</article>
+											<article className={monthlyCommitment.remaining < 0 ? "is-short" : "is-available"}>
+												<span>{monthlyCommitment.remaining < 0 ? "Faltante estimado" : "Restante estimado"}</span>
+												<strong>${Math.abs(monthlyCommitment.remaining).toLocaleString("es-CO")}</strong>
+											</article>
+										</div>
+										{monthlyCommitment.items.length === 0 ? (
+											<p className="obligaciones-empty">No tienes obligaciones activas con monto mensual calculable.</p>
+										) : (
+											<ul className="obligaciones-monthly-list">
+												{monthlyCommitment.items.map((obligation) => (
+													<li key={obligation.id}>
+														<span>
+															{obligation.nombre}
+															<small>{obligation.frecuencia === "quincenal" ? "Quincenal · x2 al mes" : "Mensual"}</small>
+														</span>
+														<strong>${obligation.monthlyAmount.toLocaleString("es-CO")}</strong>
+													</li>
+												))}
+											</ul>
+										)}
+										{monthlyCommitment.incomes.length > 0 && (
+											<p className="obligaciones-monthly-income-detail">
+												Ingresos considerados: {monthlyCommitment.incomes.map((income) =>
+													`${income.nombre} $${income.monthlyAmount.toLocaleString("es-CO")}`
+												).join(" · ")}
+											</p>
+										)}
+									</>
+								)}
+							</section>
 							{obligations.length === 0 ? (
 								<p className="obligaciones-empty">Todavía no has registrado obligaciones.</p>
 							) : (

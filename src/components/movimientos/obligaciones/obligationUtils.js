@@ -38,6 +38,260 @@ export const getNextDueDate = (frequency, currentDate, dueDay, secondDueDay, pay
   return getDateForDay(nextMonth.getFullYear(), nextMonth.getMonth(), Number(dueDay) || date.getDate());
 };
 
+const getPreviousIncomeDate = (income, dateValue, paymentNumber) => {
+  const date = parseDateOnly(dateValue);
+  if (!date) return null;
+
+  if (income.frecuencia === "quincenal") {
+    if (Number(paymentNumber) === 2) {
+      return getDateForDay(date.getFullYear(), date.getMonth(), income.diaVencimiento);
+    }
+
+    const previousMonth = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+    return getDateForDay(
+      previousMonth.getFullYear(),
+      previousMonth.getMonth(),
+      income.diaSegundoPago || income.diaVencimiento
+    );
+  }
+
+  const previousMonth = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+  return getDateForDay(
+    previousMonth.getFullYear(),
+    previousMonth.getMonth(),
+    income.diaVencimiento || date.getDate()
+  );
+};
+
+const getScheduledObligationAmount = (obligation) => {
+  if (obligation.tipo === "pago_tarjeta") {
+    return Number(obligation.montoPendiente ?? obligation.valor ?? 0);
+  }
+  if (obligation.deudaId && Array.isArray(obligation.valoresCuota)) {
+    const installmentIndex = Math.max(0, Number(obligation.proximoPagoNumero || 1) - 1);
+    return Number(obligation.valoresCuota[installmentIndex] || 0);
+  }
+  return Number(obligation.valor || 0);
+};
+
+const getScheduledObligationOccurrences = (obligation, today, throughDate) => {
+  let date = String(obligation.fechaProximoPago || "").slice(0, 10);
+  const frequency = obligation.frecuencia === "quincenal" ? "quincenal" : "mensual";
+  const firstDay = Number(obligation.diaVencimiento) || Number(date.slice(-2));
+  const secondDay = Number(obligation.diaSegundoPago || firstDay);
+  let paymentNumber = Number(obligation.proximoPagoNumero || 1) === 2 ? 2 : 1;
+  const firstInstallmentNumber = Number(obligation.proximoPagoNumero || 1);
+  const installmentLimit = obligation.deudaId
+    ? Number(obligation.cuotas || obligation.valoresCuota?.length || firstInstallmentNumber)
+    : Infinity;
+  const occurrences = [];
+
+  if (!parseDateOnly(date)) return occurrences;
+
+  for (let index = 0; index < 12 && date <= throughDate; index += 1) {
+    const installmentNumber = firstInstallmentNumber + index;
+    if (date >= today && installmentNumber <= installmentLimit) {
+      const plannedAmount = obligation.deudaId && Array.isArray(obligation.valoresCuota)
+        ? Number(obligation.valoresCuota[installmentNumber - 1] || 0)
+        : getScheduledObligationAmount(obligation);
+      if (Number.isSafeInteger(plannedAmount) && plannedAmount > 0) {
+        occurrences.push({
+          ...obligation,
+          planId: `${obligation.id}-${date}`,
+          fechaProximoPago: date,
+          plannedAmount,
+        });
+      }
+    }
+
+    if (obligation.tipo === "pago_tarjeta") break;
+    date = getNextDueDate(frequency, date, firstDay, secondDay, paymentNumber);
+    paymentNumber = frequency === "quincenal" && paymentNumber === 1 ? 2 : 1;
+  }
+
+  return occurrences;
+};
+
+const getIncomeOccurrences = (income, throughDate) => {
+  const frequency = income.frecuencia === "quincenal" ? "quincenal" : "mensual";
+  let date = String(income.fechaProximoPago || "").slice(0, 10);
+  const firstDay = Number(income.diaVencimiento) || Number(date.slice(-2));
+  const secondDay = Number(income.diaSegundoPago || firstDay);
+  let paymentNumber = Number(income.proximoPagoNumero || 1) === 2 ? 2 : 1;
+  const dates = new Set();
+
+  if (!parseDateOnly(date)) return [];
+
+  for (let index = 0; index < 3; index += 1) {
+    const previousDate = getPreviousIncomeDate(income, date, paymentNumber);
+    if (!previousDate) break;
+    dates.add(previousDate);
+    date = previousDate;
+    paymentNumber = frequency === "quincenal" && paymentNumber === 2 ? 1 : 2;
+  }
+
+  date = String(income.fechaProximoPago).slice(0, 10);
+  paymentNumber = Number(income.proximoPagoNumero || 1) === 2 ? 2 : 1;
+  for (let index = 0; index < 8 && date <= throughDate; index += 1) {
+    dates.add(date);
+    date = getNextDueDate(frequency, date, firstDay, secondDay, paymentNumber);
+    paymentNumber = frequency === "quincenal" && paymentNumber === 1 ? 2 : 1;
+  }
+
+  return [...dates].sort();
+};
+
+export const getObligationIncomePlan = (
+  obligations,
+  incomes,
+  today = getLocalDateString(),
+  compensate = false
+) => {
+  const currentDate = parseDateOnly(today);
+  const startDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
+  const endDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 2, 14);
+  const startDateString = getLocalDateString(startDate);
+  const throughDate = getLocalDateString(endDate);
+  const incomeByDate = new Map();
+
+  incomes
+    .filter((income) => income.activa && income.fechaProximoPago)
+    .forEach((income) => {
+      const occurrences = getIncomeOccurrences(income, throughDate);
+      occurrences
+        .filter((date) => date >= today && date <= throughDate)
+        .forEach((date) => {
+        const scheduled = incomeByDate.get(date) || { date, incomeNames: [], amount: 0 };
+        scheduled.incomeNames.push(income.nombre);
+        scheduled.amount += Number(income.valor || 0);
+        incomeByDate.set(date, scheduled);
+      });
+    });
+
+  const incomeDates = [...incomeByDate.keys()].sort();
+  const allocationsByDate = new Map();
+  const unassigned = [];
+
+  if (compensate) {
+    incomeDates.forEach((date) => {
+      allocationsByDate.set(date, {
+        ...incomeByDate.get(date),
+        obligations: [],
+      });
+    });
+  }
+
+  obligations
+    .filter((obligation) =>
+      obligation.activa &&
+      !obligation.anulada &&
+      !obligation.deudaPagada &&
+      (obligation.tipo !== "pago_tarjeta" ||
+        Number(obligation.montoPendiente ?? obligation.valor ?? 0) > 0) &&
+      obligation.fechaProximoPago
+    )
+    .flatMap((obligation) => getScheduledObligationOccurrences(obligation, startDateString, throughDate))
+    .sort((first, second) => String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago)))
+    .forEach((obligation) => {
+      const dueDate = parseDateOnly(obligation.fechaProximoPago);
+      let targetIncomeDate;
+      if (dueDate.getDate() <= 14) {
+        const previousMonth = new Date(dueDate.getFullYear(), dueDate.getMonth() - 1, 1);
+        targetIncomeDate = getDateForDay(
+          previousMonth.getFullYear(),
+          previousMonth.getMonth(),
+          30
+        );
+      } else {
+        targetIncomeDate = getDateForDay(
+          dueDate.getFullYear(),
+          dueDate.getMonth(),
+          dueDate.getDate() >= 30 ? 30 : 15
+        );
+      }
+      const incomeDate = incomeDates.find((date) => date === targetIncomeDate);
+      if (!incomeDate) {
+        unassigned.push(obligation);
+        return;
+      }
+
+      const plan = allocationsByDate.get(incomeDate) || {
+        ...incomeByDate.get(incomeDate),
+        obligations: [],
+      };
+      plan.obligations.push(obligation);
+      allocationsByDate.set(incomeDate, plan);
+    });
+
+  const allocations = [...allocationsByDate.values()].sort((first, second) =>
+    first.date.localeCompare(second.date)
+  );
+
+  let carriedAmount = 0;
+  allocations.forEach((plan) => {
+    plan.carryIn = compensate ? carriedAmount : 0;
+    plan.availableAmount = plan.amount + plan.carryIn;
+    let remainingIncome = plan.availableAmount;
+    plan.obligations.forEach((obligation) => {
+      obligation.coveredAmount = Math.min(obligation.plannedAmount, remainingIncome);
+      obligation.shortfall = obligation.plannedAmount - obligation.coveredAmount;
+      remainingIncome -= obligation.coveredAmount;
+    });
+    plan.remainingIncome = remainingIncome;
+    plan.carryOut = compensate ? remainingIncome : 0;
+    carriedAmount = plan.carryOut;
+    plan.shortfall = plan.obligations.reduce((total, obligation) =>
+      total + obligation.shortfall, 0
+    );
+  });
+
+  return { allocations, unassigned, startDate: startDateString, endDate: throughDate };
+};
+
+export const getMonthlyCommitmentSummary = (obligations, incomes) => {
+  const activeObligations = obligations.filter((obligation) =>
+    obligation.activa &&
+    !obligation.anulada &&
+    !obligation.deudaPagada
+  );
+  const items = activeObligations
+    .map((obligation) => {
+      const amount = getScheduledObligationAmount(obligation);
+      const frequencyMultiplier = obligation.frecuencia === "quincenal" ? 2 : 1;
+      return {
+        ...obligation,
+        monthlyAmount: amount * frequencyMultiplier,
+      };
+    })
+    .filter((obligation) =>
+      Number.isSafeInteger(obligation.monthlyAmount) && obligation.monthlyAmount > 0
+    )
+    .sort((first, second) => second.monthlyAmount - first.monthlyAmount);
+  const monthlyObligations = items.reduce((total, obligation) =>
+    total + obligation.monthlyAmount, 0
+  );
+  const activeIncomes = incomes
+    .filter((income) => income.activa)
+    .map((income) => ({
+      ...income,
+      monthlyAmount: Number(income.valor || 0) * (income.frecuencia === "quincenal" ? 2 : 1),
+    }))
+    .filter((income) =>
+      Number.isSafeInteger(income.monthlyAmount) && income.monthlyAmount > 0
+    );
+  const monthlyIncome = activeIncomes.reduce((total, income) =>
+    total + income.monthlyAmount, 0
+  );
+
+  return {
+    items,
+    incomes: activeIncomes,
+    monthlyObligations,
+    monthlyIncome,
+    remaining: monthlyIncome - monthlyObligations,
+  };
+};
+
 export const isObligationDue = (dueDate, today = getLocalDateString()) =>
   Boolean(dueDate) && String(dueDate).slice(0, 10) <= today;
 

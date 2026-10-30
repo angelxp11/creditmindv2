@@ -280,6 +280,313 @@
   font-size: 0.95rem;
 }
 
+.obligaciones-income-plan {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 22px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--accent-color);
+  border-radius: 13px;
+  background: var(--bg-card);
+}
+
+.obligaciones-plan-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 11px;
+  background: var(--bg-primary);
+}
+
+.obligaciones-plan-switch button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.obligaciones-plan-switch button.is-selected {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.obligaciones-compensate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--bg-primary), var(--bg-hover));
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.obligaciones-compensate input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.obligaciones-compensate__copy {
+  display: grid;
+  gap: 5px;
+}
+
+.obligaciones-compensate__copy strong {
+  color: var(--text-primary);
+  font-size: 0.92rem;
+}
+
+.obligaciones-compensate__copy small {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.obligaciones-compensate__switch {
+  position: relative;
+  width: 50px;
+  height: 28px;
+  flex: 0 0 50px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.obligaciones-compensate__switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.24);
+  transition: transform 0.2s ease;
+}
+
+.obligaciones-compensate.is-enabled {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.obligaciones-compensate.is-enabled .obligaciones-compensate__switch {
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+}
+
+.obligaciones-compensate.is-enabled .obligaciones-compensate__switch > span {
+  transform: translateX(22px);
+}
+
+.obligaciones-compensate:focus-within .obligaciones-compensate__switch {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 3px;
+}
+
+.obligaciones-income-plan > .obligaciones-list__heading {
+  margin: 0;
+}
+
+.obligaciones-income-plan .obligaciones-list__heading p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.obligaciones-income-plan__group {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.obligaciones-income-plan__group > summary,
+.obligaciones-income-plan__group li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px;
+}
+
+.obligaciones-income-plan__group > summary {
+  position: relative;
+  padding-right: 38px;
+  background: var(--bg-hover);
+  cursor: pointer;
+  list-style: none;
+}
+
+.obligaciones-income-plan__group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.obligaciones-income-plan__group > summary::after {
+  position: absolute;
+  top: 20px;
+  right: 16px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  content: "";
+  transform: rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.obligaciones-income-plan__group[open] > summary::after {
+  transform: translateY(4px) rotate(225deg);
+}
+
+.obligaciones-income-plan__group > summary:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -3px;
+}
+
+.obligaciones-income-plan__group > summary > div:first-child,
+.obligaciones-income-plan__group li > span {
+  display: grid;
+  gap: 4px;
+}
+
+.obligaciones-income-plan__group > summary span,
+.obligaciones-income-plan__group li small {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.obligaciones-income-plan__totals {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+}
+
+.obligaciones-income-plan__covered {
+  color: var(--success);
+}
+
+.obligaciones-income-plan__shortfall {
+  color: #f87171 !important;
+}
+
+.obligaciones-income-plan__group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.obligaciones-income-plan__group li + li {
+  border-top: 1px solid var(--border-color);
+}
+
+.obligaciones-income-plan__group li > span:last-child {
+  justify-items: end;
+  text-align: right;
+}
+
+.obligaciones-income-plan__unassigned {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 10px;
+  color: var(--text-primary);
+}
+
+.obligaciones-income-plan__unassigned span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.obligaciones-monthly-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.obligaciones-monthly-summary article {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-hover);
+}
+
+.obligaciones-monthly-summary article span {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.obligaciones-monthly-summary article strong {
+  color: var(--text-primary);
+  font-size: 1.15rem;
+}
+
+.obligaciones-monthly-summary article.is-available strong {
+  color: var(--success);
+}
+
+.obligaciones-monthly-summary article.is-short strong {
+  color: #f87171;
+}
+
+.obligaciones-monthly-list {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  list-style: none;
+}
+
+.obligaciones-monthly-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 12px;
+}
+
+.obligaciones-monthly-list li + li {
+  border-top: 1px solid var(--border-color);
+}
+
+.obligaciones-monthly-list li > span {
+  display: grid;
+  gap: 4px;
+}
+
+.obligaciones-monthly-list small,
+.obligaciones-monthly-income-detail {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.obligaciones-monthly-income-detail {
+  margin: 0;
+}
+
 .obligaciones-list__heading > span {
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -580,6 +887,13 @@
   .obligaciones-hint { grid-column: 1; }
   .obligaciones-group > summary { padding-left: 12px; }
   .obligaciones-group__content { padding: 0 12px 10px; }
+  .obligaciones-income-plan { padding: 12px; }
+  .obligaciones-income-plan__group > summary,
+  .obligaciones-income-plan__group li { padding: 10px; }
+  .obligaciones-income-plan__group > summary { padding-right: 34px; }
+  .obligaciones-monthly-summary { grid-template-columns: 1fr; }
+  .obligaciones-monthly-summary article { gap: 5px; }
+  .obligaciones-monthly-summary article strong { font-size: 1rem; }
   .obligacion-row { align-items: flex-start; flex-wrap: wrap; }
   .obligacion-row button { flex-shrink: 0; }
   .obligaciones-modal__actions { flex-direction: column; }

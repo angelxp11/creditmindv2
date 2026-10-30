@@ -14,6 +14,7 @@ import {
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
 import { ACCOUNT_CARD_OPTIONS, getAccountCardImage, getAccountCardKey } from "../../resources/imagenes/tarjetas/accountCard";
+import { applyCreditPayment } from "./creditAccountUtils";
 import "./cuentas.css";
 
 const initialForm = {
@@ -50,6 +51,10 @@ const Cuentas = ({ isOpen, onClose }) => {
   const [liquidationDestinationId, setLiquidationDestinationId] = useState("");
   const [liquidationAmount, setLiquidationAmount] = useState("");
   const [liquidationInterest, setLiquidationInterest] = useState("0");
+  const [cardPaymentAccountId, setCardPaymentAccountId] = useState("");
+  const [cardPaymentSourceId, setCardPaymentSourceId] = useState("");
+  const [cardPaymentMode, setCardPaymentMode] = useState("total");
+  const [cardPaymentMinimumAmount, setCardPaymentMinimumAmount] = useState("");
 
   useEffect(() => {
     if (!isOpen) {
@@ -358,6 +363,188 @@ const Cuentas = ({ isOpen, onClose }) => {
     setLiquidationDestinationId("");
     setLiquidationAmount(Number(account.saldo || 0).toLocaleString("es-CO"));
     setLiquidationInterest("0");
+  };
+
+  const handleOpenCardPayment = (account) => {
+    setCardPaymentAccountId(account.id);
+    setCardPaymentSourceId("");
+    setCardPaymentMode("total");
+    setCardPaymentMinimumAmount("");
+  };
+
+  const handlePayCreditCard = async (event) => {
+    event.preventDefault();
+    const user = auth.currentUser;
+    const card = accounts.find((account) => account.id === cardPaymentAccountId);
+    const source = accounts.find((account) => account.id === cardPaymentSourceId);
+    const minimumAmount = Number(cardPaymentMinimumAmount.replace(/\./g, ""));
+    const amount = cardPaymentMode === "total"
+      ? Number(card?.deudaActual || 0)
+      : minimumAmount;
+
+    if (!user) {
+      showToast("No hay un usuario autenticado", "error");
+      return;
+    }
+    if (!card || card.tipoCuenta !== "credito" || !source || source.tipoCuenta === "credito") {
+      showToast("Selecciona una tarjeta y una cuenta de origen válidas", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(amount) || amount <= 0 || amount > Number(card.deudaActual || 0)) {
+      showToast(cardPaymentMode === "minimo"
+        ? "Ingresa un pago mínimo válido que no supere la deuda de la tarjeta"
+        : "La tarjeta no tiene una deuda válida para pagar", "error");
+      return;
+    }
+    if (amount > Number(source.saldo || 0)) {
+      showToast("Saldo insuficiente en la cuenta de origen", "error");
+      return;
+    }
+
+    setLoading(true);
+    const sourceRef = doc(db, "cuentas", source.id);
+    const cardRef = doc(db, "cuentas", card.id);
+    const movementRef = doc(collection(db, "movimientos"));
+
+    try {
+      const statementQuery = query(
+        collection(db, "obligaciones"),
+        where("usuarioId", "==", user.uid),
+        where("tarjetaId", "==", card.id),
+        where("tipo", "==", "pago_tarjeta")
+      );
+      const statementDocs = (await getDocs(statementQuery)).docs
+        .map((statementDoc) => ({ id: statementDoc.id, ref: statementDoc.ref }));
+      let updatedSourceBalance = 0;
+      let updatedCard = null;
+
+      await runTransaction(db, async (transaction) => {
+        const sourceSnapshot = await transaction.get(sourceRef);
+        const cardSnapshot = await transaction.get(cardRef);
+        if (!sourceSnapshot.exists() || !cardSnapshot.exists()) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+
+        const statementSnapshots = await Promise.all(
+          statementDocs.map(({ ref }) => transaction.get(ref))
+        );
+        const sourceData = sourceSnapshot.data();
+        const cardData = cardSnapshot.data();
+        const sourceBalance = Number(sourceData.saldo || 0);
+        const paymentAmount = cardPaymentMode === "total"
+          ? Number(cardData.deudaActual || 0)
+          : amount;
+
+        if (
+          sourceData.usuarioId !== user.uid ||
+          sourceData.tipoCuenta === "credito" ||
+          cardData.usuarioId !== user.uid ||
+          cardData.tipoCuenta !== "credito"
+        ) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        if (!Number.isSafeInteger(paymentAmount) || paymentAmount <= 0) {
+          throw new Error("INVALID_CREDIT_AMOUNT");
+        }
+        if (paymentAmount > sourceBalance) throw new Error("INSUFFICIENT_BALANCE");
+
+        const creditChanges = applyCreditPayment(cardData, paymentAmount);
+        let unappliedPayment = paymentAmount;
+        const activeStatements = statementSnapshots
+          .map((snapshot, index) => ({ snapshot, ...statementDocs[index] }))
+          .filter(({ snapshot }) => snapshot.exists() && snapshot.data().activa)
+          .sort((first, second) =>
+            String(first.snapshot.data().fechaProximoPago)
+              .localeCompare(String(second.snapshot.data().fechaProximoPago))
+          );
+        const obligationAbonos = [];
+
+        activeStatements.forEach(({ snapshot, id, ref }) => {
+          const statement = snapshot.data();
+          if (
+            statement.usuarioId !== user.uid ||
+            statement.tarjetaId !== card.id ||
+            unappliedPayment <= 0
+          ) return;
+
+          const statementAmount = Number(statement.montoPendiente ?? statement.valor ?? 0);
+          const amountApplied = Math.min(statementAmount, unappliedPayment);
+          if (amountApplied <= 0) return;
+
+          const remaining = statementAmount - amountApplied;
+          const paid = remaining <= 0;
+          transaction.update(ref, {
+            montoPendiente: remaining,
+            activa: !paid,
+            fechaUltimoPago: serverTimestamp(),
+            ...(paid ? { fechaUltimoPeriodoPagado: statement.fechaCorte } : {}),
+            ultimaActualizacion: serverTimestamp(),
+          });
+          obligationAbonos.push({ obligacionId: id, valor: amountApplied });
+          unappliedPayment -= amountApplied;
+        });
+
+        updatedSourceBalance = sourceBalance - paymentAmount;
+        updatedCard = creditChanges;
+        transaction.update(sourceRef, {
+          saldo: updatedSourceBalance,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.update(cardRef, {
+          ...creditChanges,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: source.id,
+          cuentaBanco: sourceData.banco || "",
+          cuentaNombre: sourceData.nombre || "",
+          cuentaDestinoId: card.id,
+          cuentaDestinoBanco: cardData.banco || "",
+          cuentaDestinoNombre: cardData.nombre || "",
+          tipo: "pago_tarjeta",
+          origen: "pago_desde_cuentas",
+          valor: paymentAmount,
+          ...(obligationAbonos.length > 0 ? { obligacionAbonos: obligationAbonos } : {}),
+          descripcion: cardPaymentMode === "total"
+            ? `PAGO TOTAL TARJETA ${cardData.nombre || ""}`.trim()
+            : `PAGO MÍNIMO TARJETA ${cardData.nombre || ""}`.trim(),
+          fechaHora: new Date(),
+          fechaCreacion: serverTimestamp(),
+        });
+      });
+
+      setAccounts((current) => current.map((account) => {
+        if (account.id === source.id) return { ...account, saldo: updatedSourceBalance };
+        if (account.id === card.id) return { ...account, ...updatedCard };
+        return account;
+      }));
+      setCardPaymentAccountId("");
+      setCardPaymentSourceId("");
+      setCardPaymentMinimumAmount("");
+      showToast(
+        cardPaymentMode === "total"
+          ? "Pago total de la tarjeta registrado correctamente"
+          : "Pago mínimo de la tarjeta registrado correctamente",
+        "success"
+      );
+    } catch (error) {
+      console.error("Error pagando tarjeta de crédito:", error);
+      if (error.message === "INSUFFICIENT_BALANCE") {
+        showToast("Saldo insuficiente en la cuenta de origen", "error");
+      } else if (error.message === "PAYMENT_EXCEEDS_CREDIT_DEBT") {
+        showToast("El pago no puede superar la deuda actual de la tarjeta", "error");
+      } else if (error.message === "ACCOUNT_UNAVAILABLE") {
+        showToast("La tarjeta o la cuenta de origen ya no está disponible", "error");
+      } else if (error.message === "INVALID_CREDIT_AMOUNT") {
+        showToast("La tarjeta no tiene una deuda válida para pagar", "error");
+      } else {
+        showToast("No se pudo registrar el pago de la tarjeta", "error");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLiquidateSavings = async (event) => {
@@ -706,6 +893,16 @@ const Cuentas = ({ isOpen, onClose }) => {
                       >
                         Editar
                       </button>
+                      {account.tipoCuenta === "credito" && (
+                        <button
+                          className="cuentas-pay-card"
+                          type="button"
+                          disabled={loading || Number(account.deudaActual || 0) <= 0}
+                          onClick={() => handleOpenCardPayment(account)}
+                        >
+                          Pagar tarjeta
+                        </button>
+                      )}
                       {account.tipoCuenta === "ahorros" && (
                         <button
                           className="cuentas-liquidate"
@@ -815,6 +1012,123 @@ const Cuentas = ({ isOpen, onClose }) => {
                 className="cuentas-liquidation__cancel"
                 type="button"
                 onClick={() => setLiquidationAccountId("")}
+                disabled={loading}
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {cardPaymentAccountId && (
+        <div
+          className="cuentas-modal-overlay"
+          onClick={() => !loading && setCardPaymentAccountId("")}
+        >
+          <form
+            className="cuentas-liquidation cuentas-card-payment"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="card-payment-title"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={handlePayCreditCard}
+          >
+            <div className="cuentas-liquidation__header">
+              <div>
+                <h3 id="card-payment-title">Pagar tarjeta de crédito</h3>
+                <p>
+                  Tarjeta: <strong>{accounts.find((account) => account.id === cardPaymentAccountId)?.nombre}</strong>
+                  {" · "}Deuda actual: $
+                  {Number(accounts.find((account) => account.id === cardPaymentAccountId)?.deudaActual || 0).toLocaleString("es-CO")}
+                </p>
+              </div>
+              <button
+                className="cuentas-liquidation__close"
+                type="button"
+                aria-label="Cerrar pago de tarjeta"
+                onClick={() => setCardPaymentAccountId("")}
+                disabled={loading}
+              >
+                ×
+              </button>
+            </div>
+            <div className="cuentas-card-payment__options" role="radiogroup" aria-label="Tipo de pago">
+              <button
+                className={cardPaymentMode === "total" ? "is-selected" : ""}
+                type="button"
+                role="radio"
+                aria-checked={cardPaymentMode === "total"}
+                onClick={() => setCardPaymentMode("total")}
+              >
+                Pagar total
+              </button>
+              <button
+                className={cardPaymentMode === "minimo" ? "is-selected" : ""}
+                type="button"
+                role="radio"
+                aria-checked={cardPaymentMode === "minimo"}
+                onClick={() => setCardPaymentMode("minimo")}
+              >
+                Pagar mínimo
+              </button>
+            </div>
+            {cardPaymentMode === "minimo" && (
+              <label className="form-group" htmlFor="cardPaymentMinimum">
+                Valor del pago mínimo
+                <input
+                  id="cardPaymentMinimum"
+                  required
+                  type="text"
+                  inputMode="numeric"
+                  value={cardPaymentMinimumAmount}
+                  onChange={(event) => {
+                    const digits = event.target.value.replace(/\D/g, "");
+                    setCardPaymentMinimumAmount(digits.replace(/\B(?=(\d{3})+(?!\d))/g, "."));
+                  }}
+                  placeholder="Ingresa el valor que indica tu extracto"
+                />
+                <small>Usa el valor indicado por el banco en el extracto de la tarjeta.</small>
+              </label>
+            )}
+            <label className="form-group cuentas-liquidation__destination" htmlFor="cardPaymentSource">
+              <span>Cuenta desde la que vas a pagar</span>
+              <small>El pago se descontará del saldo de esta cuenta.</small>
+              <select
+                id="cardPaymentSource"
+                className="cuentas-liquidation__destination-select"
+                required
+                value={cardPaymentSourceId}
+                onChange={(event) => setCardPaymentSourceId(event.target.value)}
+              >
+                <option value="" disabled>Selecciona una cuenta</option>
+                {accounts
+                  .filter((account) => account.tipoCuenta !== "credito")
+                  .map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.banco} · {account.nombre} · Saldo: ${Number(account.saldo || 0).toLocaleString("es-CO")}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <p className="cuentas-liquidation__total">
+              Valor a pagar: $
+              {(cardPaymentMode === "total"
+                ? Number(accounts.find((account) => account.id === cardPaymentAccountId)?.deudaActual || 0)
+                : Number(cardPaymentMinimumAmount.replace(/\./g, "")) || 0
+              ).toLocaleString("es-CO")}
+            </p>
+            <div className="cuentas-liquidation__actions">
+              <button
+                className="cuentas-submit"
+                type="submit"
+                disabled={loading || !cardPaymentSourceId}
+              >
+                Confirmar pago
+              </button>
+              <button
+                className="cuentas-liquidation__cancel"
+                type="button"
+                onClick={() => setCardPaymentAccountId("")}
                 disabled={loading}
               >
                 Cancelar
