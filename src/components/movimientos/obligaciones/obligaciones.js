@@ -12,6 +12,8 @@ import {
 import {
 	formatObligationDate,
 	formatObligationSchedule,
+	getDebtInstallmentAmounts,
+	getDebtNextInstallmentNumber,
 	getDebtTotalAmount,
 	getLocalDateString,
 	getNextCardStatements,
@@ -27,6 +29,7 @@ const initialForm = () => ({
 	nombre: "",
 	valor: "",
 	cuentaId: "",
+	deudaId: "",
 	frecuencia: "mensual",
 	fechaProximoPago: getLocalDateString(),
 	fechaPrimerPago: "",
@@ -93,6 +96,7 @@ const Obligaciones = ({ isOpen, onClose }) => {
 	const [form, setForm] = useState(initialForm);
 	const [editingId, setEditingId] = useState("");
 	const [accounts, setAccounts] = useState([]);
+	const [debts, setDebts] = useState([]);
 	const [obligations, setObligations] = useState([]);
 	const [incomeForm, setIncomeForm] = useState(initialIncomeForm);
 	const [editingIncomeId, setEditingIncomeId] = useState("");
@@ -114,10 +118,11 @@ const Obligaciones = ({ isOpen, onClose }) => {
 
 			setLoading(true);
 			try {
-				const [accountsSnapshot, obligationsSnapshot, incomesSnapshot] = await Promise.all([
+				const [accountsSnapshot, obligationsSnapshot, incomesSnapshot, debtsSnapshot] = await Promise.all([
 					getDocs(query(collection(db, "cuentas"), where("usuarioId", "==", user.uid))),
 					getDocs(query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))),
 					getDocs(query(collection(db, "ingresosRecurrentes"), where("usuarioId", "==", user.uid))),
+					getDocs(query(collection(db, "deudas"), where("usuarioId", "==", user.uid))),
 				]);
 				setAccounts(accountsSnapshot.docs
 					.map((accountDoc) => ({ id: accountDoc.id, ...accountDoc.data() })));
@@ -127,6 +132,8 @@ const Obligaciones = ({ isOpen, onClose }) => {
 				setRecurringIncomes(incomesSnapshot.docs
 					.map((incomeDoc) => ({ id: incomeDoc.id, ...incomeDoc.data() }))
 					.sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
+				setDebts(debtsSnapshot.docs
+					.map((debtDoc) => ({ id: debtDoc.id, ...debtDoc.data() })));
 			} catch (error) {
 				console.error("Error cargando obligaciones:", error);
 				showToast("No se pudieron cargar las obligaciones", "error");
@@ -340,6 +347,7 @@ const Obligaciones = ({ isOpen, onClose }) => {
 			? form.fechaPrimerPago
 			: form.fechaProximoPago;
 		const secondPaymentDate = form.fechaSegundoPago;
+		const selectedDebt = debts.find((debt) => debt.id === form.deudaId);
 
 		if (!user) {
 			showToast("Necesitas iniciar sesión", "error");
@@ -353,6 +361,21 @@ const Obligaciones = ({ isOpen, onClose }) => {
 			showToast("Completa todos los datos de la obligación", "error");
 			return;
 		}
+		if (form.deudaId && !selectedDebt) {
+			showToast("Selecciona una deuda válida", "error");
+			return;
+		}
+		if (selectedDebt) {
+			const debtBalance = Number(selectedDebt.montoRestante ?? selectedDebt.monto ?? 0);
+			if (selectedDebt.pagada || debtBalance <= 0) {
+				showToast("Esta deuda ya está saldada", "error");
+				return;
+			}
+			if (amount > debtBalance) {
+				showToast("El valor de la cuota no puede superar el saldo de la deuda", "error");
+				return;
+			}
+		}
 		if (form.frecuencia === "quincenal") {
 			const firstDay = Number(firstPaymentDate.slice(-2));
 			const secondDay = Number(secondPaymentDate.slice(-2));
@@ -364,86 +387,188 @@ const Obligaciones = ({ isOpen, onClose }) => {
 
 		setLoading(true);
 		try {
-				if (editingId) {
-					const existingObligation = obligations.find((item) => item.id === editingId);
-					if (!existingObligation) {
-						throw new Error("OBLIGATION_UNAVAILABLE");
+			const existingObligation = editingId
+				? obligations.find((item) => item.id === editingId)
+				: null;
+			if (editingId && !existingObligation) {
+				throw new Error("OBLIGATION_UNAVAILABLE");
+			}
+			const obligationId = editingId || doc(collection(db, "obligaciones")).id;
+			const obligationRef = doc(db, "obligaciones", obligationId);
+			const oldDebtId = existingObligation?.deudaId || "";
+			const debtIds = [...new Set([oldDebtId, form.deudaId].filter(Boolean))];
+			const dueDate = form.frecuencia === "quincenal" &&
+				Number(existingObligation?.proximoPagoNumero || 1) === 2
+				? secondPaymentDate
+				: firstPaymentDate;
+			const dueDay = Number(firstPaymentDate.slice(-2));
+			const secondDueDay = form.frecuencia === "quincenal"
+				? Number(secondPaymentDate.slice(-2))
+				: null;
+
+			const updatedData = await runTransaction(db, async (transaction) => {
+				const obligationSnapshot = editingId ? await transaction.get(obligationRef) : null;
+				if (editingId && (!obligationSnapshot?.exists() ||
+					obligationSnapshot.data().usuarioId !== user.uid)) {
+					throw new Error("OBLIGATION_UNAVAILABLE");
+				}
+				const debtSnapshots = await Promise.all(debtIds.map((debtId) =>
+					transaction.get(doc(db, "deudas", debtId))
+				));
+				const debtDataById = new Map(debtIds.map((debtId, index) => [
+					debtId,
+					debtSnapshots[index]?.exists() ? debtSnapshots[index].data() : null,
+				]));
+				debtIds.forEach((debtId) => {
+					const debtData = debtDataById.get(debtId);
+					if (!debtData || debtData.usuarioId !== user.uid) {
+						throw new Error("OBLIGATION_DEBT_UNAVAILABLE");
 					}
-					const dueDate = form.frecuencia === "quincenal" &&
-						Number(existingObligation.proximoPagoNumero || 1) === 2
-						? secondPaymentDate
-						: firstPaymentDate;
-					const dueDay = Number(firstPaymentDate.slice(-2));
-					const secondDueDay = form.frecuencia === "quincenal"
-						? Number(secondPaymentDate.slice(-2))
-						: null;
-					const updatedData = {
-						nombre: name,
-						valor: amount,
-						cuentaId: account.id,
-						cuentaBanco: account.banco || "",
-						cuentaNombre: account.nombre || "",
-						frecuencia: form.frecuencia,
-						fechaProximoPago: dueDate,
-						diaVencimiento: dueDay,
-						diaSegundoPago: secondDueDay,
-						proximoPagoNumero: existingObligation.frecuencia === form.frecuencia
+					if (debtId === oldDebtId && debtData.obligacionId &&
+						debtData.obligacionId !== obligationId) {
+						throw new Error("OBLIGATION_DEBT_LINKED");
+					}
+				});
+				const targetDebt = form.deudaId ? debtDataById.get(form.deudaId) : null;
+				if (targetDebt) {
+					const targetBalance = Number(targetDebt.montoRestante ?? targetDebt.monto ?? 0);
+					if (targetDebt.pagada || targetBalance <= 0) {
+						throw new Error("OBLIGATION_DEBT_PAID");
+					}
+					if (targetDebt.obligacionId && targetDebt.obligacionId !== obligationId) {
+						throw new Error("OBLIGATION_DEBT_LINKED");
+					}
+					if (amount > targetBalance) {
+						throw new Error("OBLIGATION_PAYMENT_EXCEEDS_BALANCE");
+					}
+				}
+
+				const sameDebt = Boolean(form.deudaId && form.deudaId === oldDebtId);
+				const data = {
+					...(editingId ? {} : { usuarioId: user.uid, activa: true, fechaCreacion: serverTimestamp() }),
+					nombre: name,
+					valor: amount,
+					cuentaId: account.id,
+					cuentaBanco: account.banco || "",
+					cuentaNombre: account.nombre || "",
+					frecuencia: form.frecuencia,
+					fechaProximoPago: dueDate,
+					diaVencimiento: dueDay,
+					diaSegundoPago: secondDueDay,
+					proximoPagoNumero: sameDebt && existingObligation.frecuencia === form.frecuencia
+						? Number(existingObligation.proximoPagoNumero || 1)
+						: existingObligation?.frecuencia === form.frecuencia && !oldDebtId && !form.deudaId
 							? Number(existingObligation.proximoPagoNumero || 1)
 							: 1,
-						ultimaActualizacion: serverTimestamp(),
+					ultimaActualizacion: serverTimestamp(),
+				};
+				const localData = { ...data };
+				if (targetDebt) {
+					const debtBalance = Number(targetDebt.montoRestante ?? targetDebt.monto ?? 0);
+					const installmentAmounts = getDebtInstallmentAmounts(
+						debtBalance,
+						amount,
+						sameDebt ? Number(existingObligation.proximoPagoNumero || 1) - 1 : 0,
+						sameDebt ? existingObligation.valoresCuota || [] : []
+					);
+					const debtFields = {
+						deudaId: form.deudaId,
+						deudaTotal: sameDebt
+							? Number(existingObligation.deudaTotal || targetDebt.monto || targetDebt.montoRestante)
+							: Number(targetDebt.monto || targetDebt.montoRestante),
+						deudaRestante: debtBalance,
+						deudaPagada: false,
+						cuotas: installmentAmounts.length,
+						valorCuota: amount,
+						valoresCuota: installmentAmounts,
 					};
-					const obligationRef = doc(db, "obligaciones", editingId);
-					const debtRef = existingObligation.deudaId
-						? doc(db, "deudas", existingObligation.deudaId)
-						: null;
-					await runTransaction(db, async (transaction) => {
-						const debtSnapshot = debtRef ? await transaction.get(debtRef) : null;
-						if (debtRef && (!debtSnapshot?.exists() ||
-							debtSnapshot.data().usuarioId !== user.uid)) {
-							throw new Error("OBLIGATION_DEBT_UNAVAILABLE");
-						}
-						transaction.update(obligationRef, updatedData);
-						if (debtRef) {
-							transaction.update(debtRef, {
-								proximaFechaPago: dueDate,
-								ultimaActualizacion: serverTimestamp(),
-							});
-						}
-					});
-					setObligations((current) => current.map((item) =>
-						item.id === editingId ? { ...item, ...updatedData } : item
-					).sort((first, second) =>
-						String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
-					));
-					setEditingId("");
-					showToast("Obligación actualizada", "success");
+					Object.assign(data, debtFields);
+					Object.assign(localData, debtFields);
 				} else {
-					const obligationData = {
-						usuarioId: user.uid,
-						nombre: name,
-						valor: amount,
-						cuentaId: account.id,
-						cuentaBanco: account.banco || "",
-						cuentaNombre: account.nombre || "",
-						frecuencia: form.frecuencia,
-						fechaProximoPago: firstPaymentDate,
-						diaVencimiento: Number(firstPaymentDate.slice(-2)),
-						diaSegundoPago: form.frecuencia === "quincenal" ? Number(secondPaymentDate.slice(-2)) : null,
-						proximoPagoNumero: 1,
-						activa: true,
-						fechaCreacion: serverTimestamp(),
-					};
-					const obligationRef = await addDoc(collection(db, "obligaciones"), obligationData);
-					setObligations((current) => [...current, { id: obligationRef.id, ...obligationData }]
-						.sort((a, b) => String(a.fechaProximoPago).localeCompare(String(b.fechaProximoPago))));
-					showToast("Obligación registrada", "success");
+					["deudaId", "deudaTotal", "deudaRestante", "deudaPagada", "cuotas", "valoresCuota"]
+						.forEach((field) => {
+							data[field] = deleteField();
+							delete localData[field];
+						});
 				}
-				setForm(initialForm());
+				if (editingId) {
+					transaction.update(obligationRef, data);
+				} else {
+					transaction.set(obligationRef, data);
+				}
+				if (oldDebtId && oldDebtId !== form.deudaId) {
+					transaction.update(doc(db, "deudas", oldDebtId), {
+						obligacionId: deleteField(),
+						ultimaActualizacion: serverTimestamp(),
+					});
+				}
+				if (targetDebt) {
+					const debtBalance = Number(targetDebt.montoRestante ?? targetDebt.monto ?? 0);
+					const installmentAmounts = getDebtInstallmentAmounts(
+						debtBalance,
+						amount,
+						sameDebt ? Number(existingObligation.proximoPagoNumero || 1) - 1 : 0,
+						sameDebt ? existingObligation.valoresCuota || [] : []
+					);
+					const nextInstallmentNumber = sameDebt
+						? getDebtNextInstallmentNumber(installmentAmounts, debtBalance)
+						: 1;
+					transaction.update(doc(db, "deudas", form.deudaId), {
+						obligacionId: obligationId,
+						proximaFechaPago: dueDate,
+						deudaTotal: sameDebt
+							? Number(existingObligation.deudaTotal || targetDebt.monto || targetDebt.montoRestante)
+							: Number(targetDebt.monto || targetDebt.montoRestante),
+						cuotas: installmentAmounts.length,
+						valorCuota: amount,
+						valoresCuota: installmentAmounts,
+						proximoPagoNumero: nextInstallmentNumber,
+						ultimaActualizacion: serverTimestamp(),
+					});
+				}
+				return localData;
+			});
+			setObligations((current) => {
+				const next = [
+					...current.filter((item) => item.id !== obligationId),
+					{ ...existingObligation, ...updatedData, id: obligationId },
+				];
+				return next.sort((first, second) =>
+					String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
+				);
+			});
+			setDebts((current) => current.map((debt) => {
+				if (debt.id === oldDebtId && oldDebtId !== form.deudaId) {
+					const unlinkedDebt = { ...debt };
+					delete unlinkedDebt.obligacionId;
+					return unlinkedDebt;
+				}
+				return debt.id === form.deudaId
+					? {
+						...debt,
+						obligacionId: obligationId,
+						proximaFechaPago: dueDate,
+						deudaTotal: updatedData.deudaTotal,
+						cuotas: updatedData.cuotas,
+						valorCuota: updatedData.valorCuota,
+						valoresCuota: updatedData.valoresCuota,
+						proximoPagoNumero: updatedData.proximoPagoNumero || 1,
+					}
+					: debt;
+			}));
+			setEditingId("");
+			showToast(editingId ? "Obligación actualizada" : "Obligación registrada", "success");
+			setForm(initialForm());
 		} catch (error) {
 			console.error("Error guardando obligación:", error);
-			showToast(error.message === "OBLIGATION_DEBT_UNAVAILABLE"
-				? "No se pudo actualizar la fecha de la deuda asociada"
-				: "No se pudo guardar la obligación", "error");
+			const errorMessages = {
+				OBLIGATION_UNAVAILABLE: "No se pudo actualizar la obligación",
+				OBLIGATION_DEBT_UNAVAILABLE: "No se pudo acceder a la deuda seleccionada",
+				OBLIGATION_DEBT_PAID: "Esta deuda ya está saldada",
+				OBLIGATION_DEBT_LINKED: "Esta deuda ya está vinculada a otra obligación",
+				OBLIGATION_PAYMENT_EXCEEDS_BALANCE: "El valor de la cuota no puede superar el saldo de la deuda",
+			};
+			showToast(errorMessages[error.message] || "No se pudo guardar la obligación", "error");
 		} finally {
 			setLoading(false);
 		}
@@ -467,6 +592,7 @@ const Obligaciones = ({ isOpen, onClose }) => {
 			valor: formatMoneyInput(String(Number(obligation.valor || 0))),
 			cuentaId: obligation.cuentaId || "",
 			frecuencia: frequency,
+			deudaId: obligation.deudaId || "",
 			fechaProximoPago: nextDueDate,
 			fechaPrimerPago: firstDate,
 			fechaSegundoPago: secondDate,
@@ -722,8 +848,8 @@ const Obligaciones = ({ isOpen, onClose }) => {
 				? Math.max(0, Number(obligation.deudaRestante ?? debtTotal))
 				: 0;
 			const installmentCount = Math.max(
-				1,
-				Math.floor(Number(obligation.cuotas || obligation.valoresCuota?.length || 1)) || 1
+				0,
+				Math.floor(Number(obligation.cuotas || obligation.valoresCuota?.length || 0)) || 0
 			);
 			const paidInstallments = obligation.deudaPagada
 				? installmentCount
@@ -736,9 +862,13 @@ const Obligaciones = ({ isOpen, onClose }) => {
 					<div className="obligacion-row__details">
 						<strong>{obligation.nombre}</strong>
 						<span>
-							${getObligationAmount(obligation).toLocaleString("es-CO")}
+							${(obligation.deudaId
+								? Number(obligation.valor || 0)
+								: getObligationAmount(obligation)).toLocaleString("es-CO")}
 							{obligation.deudaId
-								? ` total · Cuota ${obligation.proximoPagoNumero || 1} de ${obligation.cuotas || obligation.valoresCuota?.length || 1}`
+								? installmentCount > 0
+									? ` por cuota · Cuota ${obligation.proximoPagoNumero || 1} de ${installmentCount}`
+									: " por pago programado"
 								: obligation.tipo === "pago_tarjeta"
 									? ` pendiente del extracto · Corte ${formatObligationDate(obligation.fechaCorte)}`
 									: ""}
@@ -746,25 +876,29 @@ const Obligaciones = ({ isOpen, onClose }) => {
 						</span>
 						{obligation.deudaId && (
 							<div className="obligacion-debt-progress">
-								<div
-									className="obligacion-debt-progress__installments"
-									role="progressbar"
-									aria-label={`Cuotas pagadas de ${obligation.nombre}`}
-									aria-valuemin="0"
-									aria-valuemax={installmentCount}
-									aria-valuenow={paidInstallments}
-								>
-									{Array.from({ length: installmentCount }, (_, index) => (
-										<span
-											key={index}
-											className={index < paidInstallments
-												? "obligacion-debt-progress__slot obligacion-debt-progress__slot--paid"
-												: "obligacion-debt-progress__slot"}
-										/>
-									))}
-								</div>
+								{installmentCount > 0 && (
+									<div
+										className="obligacion-debt-progress__installments"
+										role="progressbar"
+										aria-label={`Cuotas pagadas de ${obligation.nombre}`}
+										aria-valuemin="0"
+										aria-valuemax={installmentCount}
+										aria-valuenow={paidInstallments}
+									>
+										{Array.from({ length: installmentCount }, (_, index) => (
+											<span
+												key={index}
+												className={index < paidInstallments
+													? "obligacion-debt-progress__slot obligacion-debt-progress__slot--paid"
+													: "obligacion-debt-progress__slot"}
+											/>
+										))}
+									</div>
+								)}
 								<span>
-									Cuotas pagadas {paidInstallments} de {installmentCount}
+									{installmentCount > 0
+										? `Cuotas pagadas ${paidInstallments} de ${installmentCount}`
+										: "Pago programado"}
 									{" · "}Pagado ${Math.max(0, debtTotal - debtRemaining).toLocaleString("es-CO")} de ${debtTotal.toLocaleString("es-CO")}
 									{" · "}Restante ${debtRemaining.toLocaleString("es-CO")}
 								</span>
@@ -845,8 +979,41 @@ const Obligaciones = ({ isOpen, onClose }) => {
 				<input required value={form.nombre} onChange={(event) => setForm((current) => ({ ...current, nombre: event.target.value.toUpperCase() }))} placeholder="Arriendo" />
 			</label>
 			<label>
-				<span>Valor del pago</span>
+				<span>{form.deudaId ? "Valor de la cuota" : "Valor del pago"}</span>
 				<input required type="text" inputMode="numeric" pattern="[0-9.]+" value={form.valor} onChange={(event) => setForm((current) => ({ ...current, valor: formatMoneyInput(event.target.value) }))} placeholder="500.000" />
+			</label>
+			<label>
+				<span>Relacionar con una deuda (opcional)</span>
+				<select value={form.deudaId} onChange={(event) => {
+					const debtId = event.target.value;
+					const debt = debts.find((item) => item.id === debtId);
+					setForm((current) => ({
+						...current,
+						deudaId: debtId,
+						...(debt && !current.nombre.trim()
+							? { nombre: debt.nombre || "" }
+							: {}),
+					}));
+				}}>
+					<option value="">No vincular · gasto recurrente</option>
+					{debts
+						.filter((debt) => {
+							const balance = Number(debt.montoRestante ?? debt.monto ?? 0);
+							return balance > 0 &&
+								!debt.pagada &&
+								(!debt.obligacionId || debt.obligacionId === editingId);
+						})
+						.map((debt) => (
+							<option key={debt.id} value={debt.id}>
+								{debt.nombre} · saldo ${Number(debt.montoRestante ?? debt.monto ?? 0).toLocaleString("es-CO")}
+							</option>
+						))}
+				</select>
+				{form.deudaId && (
+					<p className="obligaciones-hint">
+						El plan repetirá esta cuota hasta cubrir el saldo. Registra cada pago desde Deudas para mantener el saldo actualizado.
+					</p>
+				)}
 			</label>
 			<label>
 				<span>Cuenta para pagar</span>
@@ -1054,7 +1221,7 @@ const Obligaciones = ({ isOpen, onClose }) => {
 										<div className="obligaciones-list__heading">
 											<div>
 												<h3 id="income-plan-title">Plan según tus ingresos</h3>
-												<p>Proyección del próximo mes y los vencimientos del 1 al 14 del siguiente: el ingreso del 30 cubre del 1 al 14 siguiente y los vencimientos del 30 en adelante; el del 15 cubre del 15 al 29. Si falta el ingreso de una fecha, sus pagos quedan sin asignar. No se mueve dinero.</p>
+												<p>Proyección del próximo mes y los vencimientos del 1 al 14 del siguiente: cada obligación se asigna al ingreso programado más reciente anterior a su vencimiento. Si no hay un ingreso previo, queda sin asignar; los sobrantes solo se acumulan si activas “Compensar sobrantes”.</p>
 											</div>
 										</div>
 										{incomePlan.allocations.length === 0 && incomePlan.unassigned.length === 0 ? (

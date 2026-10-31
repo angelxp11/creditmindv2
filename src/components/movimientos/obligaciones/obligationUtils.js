@@ -71,7 +71,49 @@ const getScheduledObligationAmount = (obligation) => {
     const installmentIndex = Math.max(0, Number(obligation.proximoPagoNumero || 1) - 1);
     return Number(obligation.valoresCuota[installmentIndex] || 0);
   }
+  if (obligation.deudaId && Number.isFinite(Number(obligation.deudaRestante))) {
+    return Math.min(Number(obligation.valor || 0), Number(obligation.deudaRestante));
+  }
   return Number(obligation.valor || 0);
+};
+
+export const getDebtInstallmentAmounts = (
+  remainingBalance,
+  installmentAmount,
+  paidInstallments = 0,
+  previousInstallments = []
+) => {
+  if (
+    !Number.isSafeInteger(remainingBalance) || remainingBalance <= 0 ||
+    !Number.isSafeInteger(installmentAmount) || installmentAmount <= 0
+  ) {
+    throw new Error("INVALID_DEBT_INSTALLMENT_PLAN");
+  }
+
+  const paidCount = Math.max(0, Math.floor(Number(paidInstallments) || 0));
+  const amounts = previousInstallments.slice(0, paidCount).map(Number);
+  while (amounts.length < paidCount) amounts.push(installmentAmount);
+
+  const remainingInstallmentCount = Math.ceil(remainingBalance / installmentAmount);
+  for (let index = 0; index < remainingInstallmentCount; index += 1) {
+    amounts.push(index === remainingInstallmentCount - 1
+      ? remainingBalance - installmentAmount * index
+      : installmentAmount);
+  }
+
+  return amounts;
+};
+
+export const getDebtNextInstallmentNumber = (installmentAmounts, remainingBalance) => {
+  if (!Array.isArray(installmentAmounts) || installmentAmounts.length === 0) return 1;
+  const total = installmentAmounts.reduce((sum, amount) => sum + Number(amount || 0), 0);
+  const paidAmount = Math.max(0, total - Number(remainingBalance || 0));
+  let cumulativeAmount = 0;
+  const nextIndex = installmentAmounts.findIndex((amount) => {
+    cumulativeAmount += Number(amount || 0);
+    return cumulativeAmount > paidAmount;
+  });
+  return nextIndex < 0 ? installmentAmounts.length : nextIndex + 1;
 };
 
 const getScheduledObligationOccurrences = (obligation, today, throughDate) => {
@@ -81,9 +123,10 @@ const getScheduledObligationOccurrences = (obligation, today, throughDate) => {
   const secondDay = Number(obligation.diaSegundoPago || firstDay);
   let paymentNumber = Number(obligation.proximoPagoNumero || 1) === 2 ? 2 : 1;
   const firstInstallmentNumber = Number(obligation.proximoPagoNumero || 1);
-  const installmentLimit = obligation.deudaId
-    ? Number(obligation.cuotas || obligation.valoresCuota?.length || firstInstallmentNumber)
+  const installmentLimit = obligation.deudaId && (obligation.cuotas || obligation.valoresCuota?.length)
+    ? Number(obligation.cuotas || obligation.valoresCuota.length)
     : Infinity;
+  let remainingDebt = Number(obligation.deudaRestante);
   const occurrences = [];
 
   if (!parseDateOnly(date)) return occurrences;
@@ -94,13 +137,17 @@ const getScheduledObligationOccurrences = (obligation, today, throughDate) => {
       const plannedAmount = obligation.deudaId && Array.isArray(obligation.valoresCuota)
         ? Number(obligation.valoresCuota[installmentNumber - 1] || 0)
         : getScheduledObligationAmount(obligation);
-      if (Number.isSafeInteger(plannedAmount) && plannedAmount > 0) {
+      const occurrenceAmount = Number.isFinite(remainingDebt)
+        ? Math.min(plannedAmount, remainingDebt)
+        : plannedAmount;
+      if (Number.isSafeInteger(occurrenceAmount) && occurrenceAmount > 0) {
         occurrences.push({
           ...obligation,
           planId: `${obligation.id}-${date}`,
           fechaProximoPago: date,
-          plannedAmount,
+          plannedAmount: occurrenceAmount,
         });
+        if (Number.isFinite(remainingDebt)) remainingDebt -= occurrenceAmount;
       }
     }
 
@@ -193,23 +240,9 @@ export const getObligationIncomePlan = (
     .flatMap((obligation) => getScheduledObligationOccurrences(obligation, startDateString, throughDate))
     .sort((first, second) => String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago)))
     .forEach((obligation) => {
-      const dueDate = parseDateOnly(obligation.fechaProximoPago);
-      let targetIncomeDate;
-      if (dueDate.getDate() <= 14) {
-        const previousMonth = new Date(dueDate.getFullYear(), dueDate.getMonth() - 1, 1);
-        targetIncomeDate = getDateForDay(
-          previousMonth.getFullYear(),
-          previousMonth.getMonth(),
-          30
-        );
-      } else {
-        targetIncomeDate = getDateForDay(
-          dueDate.getFullYear(),
-          dueDate.getMonth(),
-          dueDate.getDate() >= 30 ? 30 : 15
-        );
-      }
-      const incomeDate = incomeDates.find((date) => date === targetIncomeDate);
+      const incomeDate = incomeDates
+        .filter((date) => date <= obligation.fechaProximoPago)
+        .pop();
       if (!incomeDate) {
         unassigned.push(obligation);
         return;
@@ -328,6 +361,9 @@ export const getHomePendingObligations = (obligations, today = getLocalDateStrin
 };
 
 export const getDebtTotalAmount = (obligation) => {
+  const debtTotal = Number(obligation?.deudaTotal || 0);
+  if (debtTotal > 0) return debtTotal;
+
   const installmentTotal = Array.isArray(obligation?.valoresCuota)
     ? obligation.valoresCuota.reduce((total, amount) => total + (Number(amount) || 0), 0)
     : 0;

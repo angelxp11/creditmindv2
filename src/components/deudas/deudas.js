@@ -14,7 +14,11 @@ import {
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
-import { getLocalDateString } from "../movimientos/obligaciones/obligationUtils";
+import {
+  getDebtInstallmentAmounts,
+  getDebtNextInstallmentNumber,
+  getLocalDateString,
+} from "../movimientos/obligaciones/obligationUtils";
 import "./deudas.css";
 
 const initialForm = {
@@ -80,13 +84,33 @@ const Deudas = ({ isOpen, onClose }) => {
       if (!user) return;
       setLoading(true);
       try {
-        const [deudasSnap, cuentasSnap] = await Promise.all([
+        const [deudasSnap, cuentasSnap, obligacionesSnap] = await Promise.all([
           getDocs(query(collection(db, "deudas"), where("usuarioId", "==", user.uid))),
           getDocs(query(collection(db, "cuentas"), where("usuarioId", "==", user.uid))),
+          getDocs(query(collection(db, "obligaciones"), where("usuarioId", "==", user.uid))),
         ]);
 
+        const obligationsByDebtId = new Map(
+          obligacionesSnap.docs
+            .map((obligationDoc) => ({ id: obligationDoc.id, ...obligationDoc.data() }))
+            .filter((obligation) => obligation.deudaId)
+            .map((obligation) => [obligation.deudaId, obligation])
+        );
         const deudaDocs = deudasSnap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
+          .map((d) => {
+            const debt = { id: d.id, ...d.data() };
+            const linkedObligation = obligationsByDebtId.get(debt.id);
+            return linkedObligation && !debt.cuotas
+              ? {
+                ...debt,
+                deudaTotal: linkedObligation.deudaTotal || debt.monto,
+                cuotas: linkedObligation.cuotas,
+                valorCuota: linkedObligation.valor,
+                valoresCuota: linkedObligation.valoresCuota,
+                proximoPagoNumero: linkedObligation.proximoPagoNumero || 1,
+              }
+              : debt;
+          })
           .sort((a, b) =>
             (b.fechaCreacion?.toMillis?.() ?? 0) - (a.fechaCreacion?.toMillis?.() ?? 0)
           );
@@ -382,6 +406,7 @@ const Deudas = ({ isOpen, onClose }) => {
     setLoading(true);
     try {
       const obligationRef = doc(collection(db, "obligaciones"));
+      const installmentAmounts = getDebtInstallmentAmounts(montoRestante, valor);
       const obligationData = {
         usuarioId: user.uid,
         nombre: deuda.nombre.trim().toUpperCase(),
@@ -397,8 +422,12 @@ const Deudas = ({ isOpen, onClose }) => {
           : null,
         proximoPagoNumero: 1,
         deudaId: deuda.id,
+        deudaTotal: Number(deuda.monto || montoRestante),
         deudaRestante: montoRestante,
         deudaPagada: false,
+        cuotas: installmentAmounts.length,
+        valorCuota: valor,
+        valoresCuota: installmentAmounts,
         activa: true,
         fechaCreacion: serverTimestamp(),
       };
@@ -406,12 +435,25 @@ const Deudas = ({ isOpen, onClose }) => {
       batch.set(obligationRef, obligationData);
       batch.update(doc(db, "deudas", deuda.id), {
         obligacionId: obligationRef.id,
+        deudaTotal: Number(deuda.monto || montoRestante),
+        cuotas: installmentAmounts.length,
+        valorCuota: valor,
+        valoresCuota: installmentAmounts,
+        proximoPagoNumero: 1,
         ultimaActualizacion: serverTimestamp(),
       });
       await batch.commit();
 
       setDeudas((current) => current.map((item) =>
-        item.id === deuda.id ? { ...item, obligacionId: obligationRef.id } : item
+        item.id === deuda.id ? {
+          ...item,
+          obligacionId: obligationRef.id,
+          deudaTotal: Number(deuda.monto || montoRestante),
+          cuotas: installmentAmounts.length,
+          valorCuota: valor,
+          valoresCuota: installmentAmounts,
+          proximoPagoNumero: 1,
+        } : item
       ));
       closeObligationModal();
       showToast("Deuda vinculada a una obligación", "success");
@@ -476,15 +518,20 @@ const Deudas = ({ isOpen, onClose }) => {
     setLoading(true);
     try {
       const deudaPagada = nuevoRestante <= 0;
+      const proximoPagoNumero = deudaActual.obligacionId && deudaActual.valoresCuota?.length
+        ? getDebtNextInstallmentNumber(deudaActual.valoresCuota, nuevoRestante)
+        : deudaActual.proximoPagoNumero;
       const batch = writeBatch(db);
       batch.update(doc(db, "deudas", deudaActual.id), {
         montoRestante: nuevoRestante,
         pagada: deudaPagada,
+        ...(proximoPagoNumero ? { proximoPagoNumero } : {}),
         ultimaActualizacion: serverTimestamp(),
       });
       if (deudaActual.obligacionId) {
         batch.update(doc(db, "obligaciones", deudaActual.obligacionId), {
           deudaRestante: nuevoRestante,
+          ...(proximoPagoNumero ? { proximoPagoNumero } : {}),
           deudaPagada,
           ...(deudaPagada ? { activa: false } : {}),
           ultimaActualizacion: serverTimestamp(),
@@ -495,7 +542,7 @@ const Deudas = ({ isOpen, onClose }) => {
       setDeudas((prev) =>
         prev.map((deuda) =>
           deuda.id === deudaActual.id
-            ? { ...deuda, montoRestante: nuevoRestante, pagada: deudaPagada }
+            ? { ...deuda, montoRestante: nuevoRestante, pagada: deudaPagada, ...(proximoPagoNumero ? { proximoPagoNumero } : {}) }
             : deuda
         )
       );
@@ -544,6 +591,9 @@ const Deudas = ({ isOpen, onClose }) => {
 
       const nuevoMontoRestante = montoRestanteActual - montoAPagar;
       const deudaPagada = nuevoMontoRestante <= 0;
+      const proximoPagoNumero = deudaActual.obligacionId && deudaActual.valoresCuota?.length
+        ? getDebtNextInstallmentNumber(deudaActual.valoresCuota, nuevoMontoRestante)
+        : deudaActual.proximoPagoNumero;
 
       // Avanzar próxima fecha de pago un mes (solo si no queda saldada)
       let proximaFechaPago = null;
@@ -559,12 +609,14 @@ const Deudas = ({ isOpen, onClose }) => {
       batch.update(doc(db, "deudas", paymentModal.deudaId), {
         montoRestante: nuevoMontoRestante,
         pagada: deudaPagada,
+        ...(proximoPagoNumero ? { proximoPagoNumero } : {}),
         ...(proximaFechaPago ? { proximaFechaPago } : {}),
         ultimaActualizacion: serverTimestamp(),
       });
       if (deudaActual.obligacionId) {
         batch.update(doc(db, "obligaciones", deudaActual.obligacionId), {
           deudaRestante: nuevoMontoRestante,
+          ...(proximoPagoNumero ? { proximoPagoNumero } : {}),
           ...(deudaPagada ? { activa: false, deudaPagada: true } : {}),
           ultimaActualizacion: serverTimestamp(),
         });
@@ -592,7 +644,7 @@ const Deudas = ({ isOpen, onClose }) => {
       setDeudas((prev) =>
         prev.map((d) =>
           d.id === paymentModal.deudaId
-            ? { ...d, montoRestante: nuevoMontoRestante, pagada: deudaPagada, ...(proximaFechaPago ? { proximaFechaPago } : {}) }
+            ? { ...d, montoRestante: nuevoMontoRestante, pagada: deudaPagada, ...(proximoPagoNumero ? { proximoPagoNumero } : {}), ...(proximaFechaPago ? { proximaFechaPago } : {}) }
             : d
         )
       );
@@ -635,11 +687,13 @@ const Deudas = ({ isOpen, onClose }) => {
         batch.update(doc(db, "deudas", deuda.id), {
           montoRestante: 0,
           pagada: true,
+          ...(deuda.cuotas ? { proximoPagoNumero: deuda.cuotas } : {}),
           ultimaActualizacion: serverTimestamp(),
         });
         if (deuda.obligacionId) {
           batch.update(doc(db, "obligaciones", deuda.obligacionId), {
             deudaRestante: 0,
+            ...(deuda.cuotas ? { proximoPagoNumero: deuda.cuotas } : {}),
             activa: false,
             deudaPagada: true,
             ultimaActualizacion: serverTimestamp(),
@@ -869,10 +923,19 @@ const Deudas = ({ isOpen, onClose }) => {
                         <td>
                           {deuda.cuotas ? (
                             <span className="deudas-installment">
-                              <strong>${formatNumber(String(
-                                deuda.valorCuota ?? deuda.valoresCuota?.[0] ?? 0
-                              ))}</strong>
-                              <small>Cuota {deuda.proximoPagoNumero || 1} de {deuda.cuotas}</small>
+                              {pagada ? (
+                                <small>Cuotas completadas: {deuda.cuotas}</small>
+                              ) : (
+                                <>
+                                  <strong>${formatNumber(String(
+                                    deuda.valoresCuota?.[(deuda.proximoPagoNumero || 1) - 1] ??
+                                    deuda.valorCuota ??
+                                    deuda.valoresCuota?.[0] ??
+                                    0
+                                  ))}</strong>
+                                  <small>Cuota {deuda.proximoPagoNumero || 1} de {deuda.cuotas}</small>
+                                </>
+                              )}
                             </span>
                           ) : "—"}
                         </td>

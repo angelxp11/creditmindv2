@@ -1,5 +1,7 @@
 import {
   getDebtTotalAmount,
+  getDebtInstallmentAmounts,
+  getDebtNextInstallmentNumber,
   getHomePendingObligations,
   getNextCardStatements,
   getNextDueDate,
@@ -109,7 +111,7 @@ test("the 30th payday receives obligations due on the 30th instead of the 15th p
   ]);
 });
 
-test("a day-30 obligation is not assigned to the 15th if no day-30 income is scheduled", () => {
+test("a day-30 obligation uses the most recent income before its due date", () => {
   const plan = getObligationIncomePlan(
     [{
       id: "gas",
@@ -132,8 +134,40 @@ test("a day-30 obligation is not assigned to the 15th if no day-30 income is sch
     "2026-10-30"
   );
 
-  expect(plan.allocations).toHaveLength(0);
-  expect(plan.unassigned.map(({ id }) => id)).toEqual(["gas"]);
+  expect(plan.allocations.map(({ date, obligations }) => ({
+    date,
+    obligations: obligations.map(({ id }) => id),
+  }))).toEqual([
+    { date: "2026-11-15", obligations: ["gas"] },
+  ]);
+  expect(plan.unassigned).toHaveLength(0);
+});
+
+test("obligations use actual income dates and carry available surplus forward", () => {
+  const plan = getObligationIncomePlan(
+    [
+      { id: "rent", nombre: "Arriendo", valor: 100000, frecuencia: "mensual", diaVencimiento: 10, fechaProximoPago: "2026-11-10", activa: true },
+      { id: "utilities", nombre: "Servicios", valor: 2000000, frecuencia: "mensual", diaVencimiento: 30, fechaProximoPago: "2026-11-30", activa: true },
+    ],
+    [
+      { id: "rent-income", nombre: "Arriendo de la casa", valor: 670000, frecuencia: "mensual", fechaProximoPago: "2026-11-05", diaVencimiento: 5, activa: true },
+      { id: "police-income", nombre: "Pago de la policía", valor: 2288172, frecuencia: "mensual", fechaProximoPago: "2026-11-27", diaVencimiento: 27, activa: true },
+    ],
+    "2026-10-31",
+    true
+  );
+
+  expect(plan.allocations.map(({ date, carryIn, remainingIncome, obligations }) => ({
+    date,
+    carryIn,
+    remainingIncome,
+    obligations: obligations.map(({ id }) => id),
+  }))).toEqual([
+    { date: "2026-11-05", carryIn: 0, remainingIncome: 570000, obligations: ["rent"] },
+    { date: "2026-11-27", carryIn: 570000, remainingIncome: 858172, obligations: ["utilities"] },
+    { date: "2026-12-05", carryIn: 858172, remainingIncome: 1428172, obligations: ["rent"] },
+  ]);
+  expect(plan.unassigned).toHaveLength(0);
 });
 
 test("the plan does not assign future obligations to an income date that has already passed", () => {
@@ -190,6 +224,64 @@ test("paid obligations do not appear in the income plan", () => {
 
   expect(plan.allocations).toHaveLength(0);
   expect(plan.unassigned).toHaveLength(0);
+});
+
+test("linked debts without a fixed installment count recur until their remaining balance is covered", () => {
+  const plan = getObligationIncomePlan(
+    [{
+      id: "loan-payment",
+      nombre: "Cuota préstamo",
+      valor: 100000,
+      deudaTotal: 250000,
+      deudaRestante: 150000,
+      deudaId: "loan",
+      frecuencia: "mensual",
+      diaVencimiento: 10,
+      fechaProximoPago: "2026-11-10",
+      activa: true,
+    }],
+    [
+      { id: "income-november", nombre: "Ingreso noviembre", valor: 500000, frecuencia: "mensual", fechaProximoPago: "2026-11-05", diaVencimiento: 5, activa: true },
+      { id: "income-december", nombre: "Ingreso diciembre", valor: 500000, frecuencia: "mensual", fechaProximoPago: "2026-12-05", diaVencimiento: 5, activa: true },
+    ],
+    "2026-10-31"
+  );
+
+  expect(plan.allocations.map(({ date, obligations }) => ({
+    date,
+    obligations: obligations.map(({ fechaProximoPago, plannedAmount }) => ({
+      fechaProximoPago,
+      plannedAmount,
+    })),
+  }))).toEqual([
+    { date: "2026-11-05", obligations: [{ fechaProximoPago: "2026-11-10", plannedAmount: 100000 }] },
+    { date: "2026-12-05", obligations: [{ fechaProximoPago: "2026-12-10", plannedAmount: 50000 }] },
+  ]);
+  expect(getDebtTotalAmount({
+    valor: 100000,
+    deudaTotal: 250000,
+    deudaRestante: 150000,
+    deudaId: "loan",
+  })).toBe(250000);
+});
+
+test("linked debt installment plans repeat the selected payment and adjust the last installment", () => {
+  expect(getDebtInstallmentAmounts(1000000, 100000)).toEqual(Array(10).fill(100000));
+  expect(getDebtInstallmentAmounts(1050000, 100000)).toEqual([
+    ...Array(10).fill(100000),
+    50000,
+  ]);
+  expect(getDebtInstallmentAmounts(800000, 100000, 2, [100000, 100000])).toEqual(
+    Array(10).fill(100000)
+  );
+});
+
+test("linked debt advances the displayed installment after full and partial payments", () => {
+  const installments = Array(10).fill(100000);
+  expect(getDebtNextInstallmentNumber(installments, 1000000)).toBe(1);
+  expect(getDebtNextInstallmentNumber(installments, 950000)).toBe(1);
+  expect(getDebtNextInstallmentNumber(installments, 900000)).toBe(2);
+  expect(getDebtNextInstallmentNumber(installments, 0)).toBe(10);
 });
 
 test("compensation carries leftover from the previous paycheck to cover the next period", () => {

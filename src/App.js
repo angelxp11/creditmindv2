@@ -92,6 +92,7 @@ function App() {
             onOpenDeudas={() => {
               setShowDeudas(true);
               setShowObligaciones(false);
+              setShowPresupuesto(false);
               setShowCuentas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);
