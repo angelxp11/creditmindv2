@@ -268,6 +268,121 @@ test("paid obligations do not appear in the income plan", () => {
   expect(plan.unassigned).toHaveLength(0);
 });
 
+test("card installments already included in an active statement are not allocated twice", () => {
+  const plan = getObligationIncomePlan(
+    [
+      {
+        id: "marketplace-installment",
+        nombre: "MERCADO PAGO",
+        deudaId: "marketplace-debt",
+        tipo: "pago_deuda",
+        valor: 216650,
+        deudaRestante: 2599800,
+        cuotas: 12,
+        valoresCuota: Array(12).fill(216650),
+        proximoPagoNumero: 1,
+        frecuencia: "mensual",
+        fechaProximoPago: "2026-11-15",
+        activa: true,
+      },
+      {
+        id: "dav credito-statement",
+        tipo: "pago_tarjeta",
+        valor: 878687,
+        montoPendiente: 878687,
+        fechaProximoPago: "2026-11-15",
+        cuotasCompra: [{
+          deudaId: "marketplace-debt",
+          obligacionId: "marketplace-installment",
+          numero: 1,
+          valor: 216650,
+          pagada: false,
+        }],
+        activa: true,
+      },
+    ],
+    [
+      {
+        id: "salary",
+        nombre: "NÓMINA",
+        valor: 925000,
+        frecuencia: "mensual",
+        fechaProximoPago: "2026-11-15",
+        diaVencimiento: 15,
+        activa: true,
+      },
+      {
+        id: "salary-december",
+        nombre: "NÓMINA",
+        valor: 925000,
+        frecuencia: "mensual",
+        fechaProximoPago: "2026-12-15",
+        diaVencimiento: 15,
+        activa: true,
+      },
+    ],
+    "2026-11-07"
+  );
+
+  const novemberPlan = plan.allocations.find(({ date }) => date === "2026-11-15");
+  expect(novemberPlan.obligations.map(({ id }) => id)).toEqual([
+    "dav credito-statement",
+  ]);
+  expect(novemberPlan.obligations[0].plannedAmount).toBe(878687);
+  const decemberPlan = plan.allocations.find(({ date }) => date === "2026-12-15");
+  expect(decemberPlan.obligations).toEqual([
+    expect.objectContaining({
+      id: "marketplace-installment",
+      numeroCuota: 2,
+      plannedAmount: 216650,
+    }),
+  ]);
+});
+
+test("legacy card statements without installment links still prevent plan duplicates", () => {
+  const plan = getObligationIncomePlan(
+    [
+      {
+        id: "phone-installment",
+        nombre: "CELULAR",
+        deudaId: "phone-debt",
+        cuentaId: "credit-card",
+        tipo: "pago_deuda",
+        valor: 180000,
+        deudaRestante: 1980000,
+        cuotas: 12,
+        valoresCuota: Array(12).fill(180000),
+        proximoPagoNumero: 1,
+        frecuencia: "mensual",
+        fechaProximoPago: "2026-11-15",
+        activa: true,
+      },
+      {
+        id: "old-card-statement",
+        tipo: "pago_tarjeta",
+        tarjetaId: "credit-card",
+        valor: 500000,
+        montoPendiente: 500000,
+        fechaProximoPago: "2026-11-15",
+        activa: true,
+      },
+    ],
+    [{
+      id: "salary",
+      nombre: "NÓMINA",
+      valor: 900000,
+      frecuencia: "mensual",
+      fechaProximoPago: "2026-11-15",
+      diaVencimiento: 15,
+      activa: true,
+    }],
+    "2026-11-07"
+  );
+
+  expect(plan.allocations.find(({ date }) => date === "2026-11-15").obligations)
+    .toEqual([expect.objectContaining({ id: "old-card-statement" })]);
+});
+
 test("linked debts without a fixed installment count recur until their remaining balance is covered", () => {
   const plan = getObligationIncomePlan(
     [{

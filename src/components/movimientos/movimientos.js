@@ -38,6 +38,40 @@ const initialBudget = {
   nombreLegal: "",
 };
 
+const obligationReversalFields = [
+  "fechaProximoPago",
+  "fechaUltimoPeriodoPagado",
+  "fechaUltimoPago",
+  "proximoPagoNumero",
+  "valor",
+  "frecuencia",
+  "diaVencimiento",
+  "diaSegundoPago",
+  "activa",
+  "anulada",
+  "deudaPagada",
+  "deudaRestante",
+];
+const debtReversalFields = [
+  "montoRestante",
+  "pagada",
+  "proximoPagoNumero",
+  "proximaFechaPago",
+  "frecuencia",
+  "diaVencimiento",
+  "diaSegundoPago",
+];
+
+const captureReversalState = (data, fields) => ({
+  values: fields.reduce((values, field) => {
+    if (Object.prototype.hasOwnProperty.call(data, field)) {
+      values[field] = data[field];
+    }
+    return values;
+  }, {}),
+  missing: fields.filter((field) => !Object.prototype.hasOwnProperty.call(data, field)),
+});
+
 const getObligationMonth = (date) => {
   if (typeof date === "string") return date.slice(0, 7);
   const parsedDate = typeof date?.toDate === "function"
@@ -971,6 +1005,12 @@ const Movimientos = ({ isOpen, onClose }) => {
           obligacionId: obligation.id,
           ...(debtRef ? { deudaId: currentObligation.deudaId } : {}),
           origen: "obligacion",
+          reversionObligacion: {
+            obligacion: captureReversalState(currentObligation, obligationReversalFields),
+            ...(debtSnapshot?.exists()
+              ? { deuda: captureReversalState(debtSnapshot.data(), debtReversalFields) }
+              : {}),
+          },
           fechaHora: paymentDate,
           fechaCreacion: serverTimestamp(),
         });
@@ -1078,6 +1118,57 @@ const Movimientos = ({ isOpen, onClose }) => {
     const paymentDate = new Date();
     setLoading(true);
     try {
+      let reconstructedInstallments = [];
+      if (!Array.isArray(obligation.cuotasCompra) || obligation.cuotasCompra.length === 0) {
+        const cardAccount = accounts.find((account) => account.id === obligation.tarjetaId);
+        if (cardAccount && obligation.fechaCorte) {
+          const [userMovements, usuarioMovements] = await Promise.all([
+            getDocs(query(collection(db, "movimientos"), where("userId", "==", user.uid))),
+            getDocs(query(collection(db, "movimientos"), where("usuarioId", "==", user.uid))),
+          ]);
+          const movementsById = new Map([
+            ...userMovements.docs,
+            ...usuarioMovements.docs,
+          ].map((movementSnapshot) => [
+            movementSnapshot.id,
+            movementSnapshot.data(),
+          ]));
+
+          reconstructedInstallments = [...movementsById.values()]
+            .filter((movement) =>
+              movement.cuentaId === cardAccount.id &&
+              movement.tipo === "credito_compra" &&
+              movement.deudaId &&
+              movement.obligacionId
+            )
+            .flatMap((movement) => {
+              const dateValue = movement.fechaHora || movement.fechaCreacion;
+              const purchaseDate = typeof dateValue?.toDate === "function"
+                ? dateValue.toDate()
+                : new Date(dateValue);
+              if (Number.isNaN(purchaseDate.getTime())) return [];
+              const schedule = getCreditInstallmentSchedule(
+                cardAccount,
+                Number(movement.valor),
+                Number(movement.cuotas || 1),
+                purchaseDate
+              );
+              return (schedule || [])
+                .filter((installment) =>
+                  getLocalDateString(installment.cutoffDate) ===
+                    String(obligation.fechaCorte).slice(0, 10)
+                )
+                .map((installment) => ({
+                  deudaId: movement.deudaId,
+                  obligacionId: movement.obligacionId,
+                  numero: installment.installment,
+                  valor: installment.amount,
+                  pagada: false,
+                }));
+            });
+        }
+      }
+
       const payment = await runTransaction(db, async (transaction) => {
         const obligationSnapshot = await transaction.get(obligationRef);
         if (!obligationSnapshot.exists()) throw new Error("OBLIGATION_UNAVAILABLE");
@@ -1106,8 +1197,12 @@ const Movimientos = ({ isOpen, onClose }) => {
         const creditChanges = applyCreditPayment(cardAccount, amount);
         const remaining = statementRemaining - amount;
         const paid = remaining <= 0;
+        const statementInstallments = Array.isArray(currentObligation.cuotasCompra) &&
+          currentObligation.cuotasCompra.length > 0
+          ? currentObligation.cuotasCompra
+          : reconstructedInstallments;
         const linkedInstallments = paid
-          ? (currentObligation.cuotasCompra || []).filter((installment) =>
+          ? statementInstallments.filter((installment) =>
             installment.deudaId && installment.obligacionId && !installment.pagada
           )
           : [];
@@ -1252,6 +1347,7 @@ const Movimientos = ({ isOpen, onClose }) => {
           cutoffDate: currentObligation.fechaCorte,
           cardId: currentObligation.tarjetaId,
           updatedInstallmentObligations,
+          updatedPurchaseInstallments,
         };
       });
 
@@ -1268,6 +1364,9 @@ const Movimientos = ({ isOpen, onClose }) => {
           montoPendiente: payment.remaining,
           activa: !payment.paid,
           fechaUltimoPago: payment.paidAt,
+          ...(payment.updatedPurchaseInstallments.length > 0
+            ? { cuotasCompra: payment.updatedPurchaseInstallments }
+            : {}),
           ...(payment.paid ? { fechaUltimoPeriodoPagado: payment.cutoffDate } : {}),
         }
         : payment.updatedInstallmentObligations.find((updated) => updated.id === item.id)

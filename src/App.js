@@ -82,6 +82,7 @@ function App() {
             onOpenCuentas={() => {
               setShowCuentas(true);
               setShowObligaciones(false);
+              setShowPresupuesto(false);
               setShowDeudas(false);
               setShowMovimientos(false);
               setShowVerMovimientos(false);

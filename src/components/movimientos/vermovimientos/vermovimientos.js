@@ -6,9 +6,11 @@ import {
   where,
   getDocs,
   deleteDoc,
+  deleteField,
   doc,
   updateDoc,
   runTransaction,
+  serverTimestamp,
 } from "firebase/firestore";
 import Loading from "../../../resources/loading/loading";
 import { showToast } from "../../../resources/toastcontainer/ToastContainer";
@@ -865,6 +867,159 @@ const VerMovimientos = ({ isOpen, onClose }) => {
         return;
       }
 
+      if (movimiento.origen === "obligacion" && movimiento.obligacionId) {
+        const user = auth.currentUser;
+        const accountId = movimiento.cuentaId || selectedCuentaId;
+        const accountRef = doc(db, "cuentas", accountId);
+        const obligationRef = doc(db, "obligaciones", movimiento.obligacionId);
+        let accountBalanceAfter = 0;
+        let restoredDebt = null;
+        let restoredDebtId = movimiento.deudaId || "";
+
+        if (!user) throw new Error("USUARIO_NO_AUTENTICADO");
+
+        await runTransaction(db, async (transaction) => {
+          const accountSnapshot = await transaction.get(accountRef);
+          const obligationSnapshot = await transaction.get(obligationRef);
+          if (!accountSnapshot.exists() || !obligationSnapshot.exists()) {
+            throw new Error("OBLIGATION_PAYMENT_UNAVAILABLE");
+          }
+
+          const accountData = accountSnapshot.data();
+          const obligationData = obligationSnapshot.data();
+          if (
+            accountData.usuarioId !== user.uid ||
+            obligationData.usuarioId !== user.uid
+          ) {
+            throw new Error("OBLIGATION_PAYMENT_UNAVAILABLE");
+          }
+
+          restoredDebtId = restoredDebtId || obligationData.deudaId || "";
+          const debtRef = restoredDebtId ? doc(db, "deudas", restoredDebtId) : null;
+          const debtSnapshot = debtRef ? await transaction.get(debtRef) : null;
+          if (debtSnapshot && !debtSnapshot.exists()) {
+            throw new Error("OBLIGATION_PAYMENT_UNAVAILABLE");
+          }
+          if (debtSnapshot && debtSnapshot.data().usuarioId !== user.uid) {
+            throw new Error("OBLIGATION_PAYMENT_UNAVAILABLE");
+          }
+
+          const amount = Number(movimiento.valor || 0);
+          const balance = Number(accountData.saldo || 0);
+          accountBalanceAfter = balance + amount;
+          if (
+            !Number.isSafeInteger(amount) || amount <= 0 ||
+            !Number.isSafeInteger(balance) ||
+            !Number.isSafeInteger(accountBalanceAfter)
+          ) {
+            throw new Error("INVALID_OBLIGATION_PAYMENT");
+          }
+
+          const reversal = movimiento.reversionObligacion;
+          const obligationBefore = reversal?.obligacion;
+          const debtBefore = reversal?.deuda;
+          const obligationUpdates = obligationBefore?.values
+            ? {
+              ...obligationBefore.values,
+              ...(obligationBefore.missing || []).reduce((updates, field) => {
+                updates[field] = deleteField();
+                return updates;
+              }, {}),
+            }
+            : {
+              activa: true,
+              anulada: false,
+              ...(obligationData.fechaUltimoPeriodoPagado ||
+                obligationData.fechaProximoPago
+                ? {
+                  fechaProximoPago: obligationData.fechaUltimoPeriodoPagado ||
+                    obligationData.fechaProximoPago,
+                }
+                : {}),
+              fechaUltimoPago: deleteField(),
+              fechaUltimoPeriodoPagado: deleteField(),
+              ...(obligationData.deudaRestante !== undefined
+                ? { deudaRestante: Number(obligationData.deudaRestante || 0) + amount }
+                : {}),
+              ...(Array.isArray(obligationData.valoresCuota)
+                ? (() => {
+                  const previousNumber = Math.max(
+                    1,
+                    Number(obligationData.proximoPagoNumero || 1) - 1
+                  );
+                  return {
+                    proximoPagoNumero: previousNumber,
+                    valor: Number(obligationData.valoresCuota[previousNumber - 1] || obligationData.valor || 0),
+                  };
+                })()
+                : {}),
+            };
+          transaction.update(accountRef, {
+            saldo: accountBalanceAfter,
+            ultimaActualizacion: serverTimestamp(),
+          });
+          transaction.update(obligationRef, {
+            ...obligationUpdates,
+            ultimaActualizacion: serverTimestamp(),
+          });
+
+          if (debtRef && debtSnapshot) {
+            const debtData = debtSnapshot.data();
+            const debtUpdates = debtBefore?.values
+              ? {
+                ...debtBefore.values,
+                ...(debtBefore.missing || []).reduce((updates, field) => {
+                  updates[field] = deleteField();
+                  return updates;
+                }, {}),
+              }
+              : {
+                montoRestante: Number(debtData.montoRestante ?? debtData.monto ?? 0) + amount,
+                pagada: false,
+                ...(obligationData.fechaUltimoPeriodoPagado
+                  ? { proximaFechaPago: obligationData.fechaUltimoPeriodoPagado }
+                  : {}),
+              };
+            transaction.update(debtRef, {
+              ...debtUpdates,
+              ultimaActualizacion: serverTimestamp(),
+            });
+            const restoredDebtData = {
+              ...debtData,
+              ...(debtBefore?.values || debtUpdates),
+            };
+            (debtBefore?.missing || []).forEach((field) => {
+              delete restoredDebtData[field];
+            });
+            restoredDebt = {
+              id: restoredDebtId,
+              ...restoredDebtData,
+            };
+          }
+
+          transaction.delete(doc(db, "movimientos", movimiento.id));
+        });
+
+        setAccounts((previous) => previous.map((account) =>
+          account.id === accountId
+            ? { ...account, saldo: accountBalanceAfter }
+            : account
+        ));
+        if (restoredDebt) {
+          setDebts((previous) => [
+            ...previous.filter((debt) => debt.id !== restoredDebt.id),
+            restoredDebt,
+          ]);
+        }
+        if (movimiento._source === "userId") {
+          setMovementsById((previous) => previous.filter((item) => item.id !== movimiento.id));
+        } else {
+          setMovementsByUsuarioId((previous) => previous.filter((item) => item.id !== movimiento.id));
+        }
+        showToast("Pago revertido; se restauró la obligación y el saldo", "success");
+        return;
+      }
+
       const nuevoSaldo = Number(cuentaActual.saldo || 0) + Number(movimiento.valor || 0);
 
       // 2. Actualizar el saldo de la cuenta en Firestore
@@ -907,6 +1062,10 @@ const VerMovimientos = ({ isOpen, onClose }) => {
             error.message === "CREDIT_OBLIGATION_UNAVAILABLE" ||
             error.message === "CREDIT_PAYMENT_ACCOUNT_UNAVAILABLE"
           ? "No se pudo encontrar la deuda, su obligación o una cuenta asociada al pago"
+          : error.message === "OBLIGATION_PAYMENT_UNAVAILABLE"
+          ? "No se pudo encontrar la obligación, su deuda o una cuenta asociada al pago"
+          : error.message === "INVALID_OBLIGATION_PAYMENT"
+          ? "No se pudo revertir el pago porque el valor o el saldo no es válido"
           : "No se pudo eliminar el movimiento",
         "error"
       );

@@ -146,6 +146,7 @@ const getScheduledObligationOccurrences = (obligation, today, throughDate) => {
           planId: `${obligation.id}-${date}`,
           fechaProximoPago: date,
           plannedAmount: occurrenceAmount,
+          numeroCuota: installmentNumber,
         });
         if (Number.isFinite(remainingDebt)) remainingDebt -= occurrenceAmount;
       }
@@ -200,6 +201,25 @@ export const getObligationIncomePlan = (
   const startDateString = getLocalDateString(startDate);
   const throughDate = getLocalDateString(endDate);
   const incomeByDate = new Map();
+  const cardStatements = obligations.filter((obligation) =>
+        obligation.tipo === "pago_tarjeta" &&
+        obligation.activa &&
+        !obligation.anulada &&
+        Number(obligation.montoPendiente ?? obligation.valor ?? 0) > 0
+      );
+  const cardStatementInstallments = new Set(
+    cardStatements
+      .flatMap((statement) => (statement.cuotasCompra || [])
+        .filter((installment) => installment.deudaId && !installment.pagada)
+        .flatMap((installment) => [
+          installment.deudaId
+            ? `deuda:${installment.deudaId}:${installment.numero}`
+            : null,
+          installment.obligacionId
+            ? `obligacion:${installment.obligacionId}:${installment.numero}`
+            : null,
+        ].filter(Boolean)))
+  );
   const scheduledObligations = obligations
     .filter((obligation) =>
       obligation.activa &&
@@ -210,6 +230,32 @@ export const getObligationIncomePlan = (
       obligation.fechaProximoPago
     )
     .flatMap((obligation) => getScheduledObligationOccurrences(obligation, startDateString, throughDate))
+    .filter((obligation) => {
+      if (obligation.tipo === "pago_tarjeta" || !obligation.deudaId) return true;
+
+      const installmentNumber = obligation.numeroCuota ||
+        obligation.proximoPagoNumero ||
+        1;
+      const isInActiveStatement =
+        cardStatementInstallments.has(
+          `deuda:${obligation.deudaId}:${installmentNumber}`
+        ) ||
+        cardStatementInstallments.has(
+          `obligacion:${obligation.id}:${installmentNumber}`
+        );
+      if (isInActiveStatement) return false;
+
+      const hasInstallmentSchedule =
+        Number(obligation.cuotas || obligation.valoresCuota?.length || 0) > 1;
+      if (!hasInstallmentSchedule) return true;
+
+      return !cardStatements.some((statement) =>
+        (statement.tarjetaId || statement.cuentaId) ===
+          (obligation.tarjetaId || obligation.cuentaId) &&
+        String(statement.fechaProximoPago).slice(0, 10) ===
+          String(obligation.fechaProximoPago).slice(0, 10)
+      );
+    })
     .sort((first, second) => String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago)));
   const historicalIncomeDates = new Set();
 

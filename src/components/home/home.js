@@ -777,16 +777,12 @@ const Home = () => {
     "home-budget-summary__dot--4",
     "home-budget-summary__dot--5",
   ];
-  const currentMonth = getLocalDateString().slice(0, 7);
   const frequentCreditAccounts = creditAccounts
     .map((account) => ({
       account,
       usageCount: movementHistory.filter((movement) => {
-        const movementDate = getMovementDate(movement);
         return movement.cuentaId === account.id &&
-          (movement.tipo === "credito_compra" || movement.tipo === "credito_avance") &&
-          movementDate &&
-          getLocalDateString(movementDate).slice(0, 7) === currentMonth;
+          (movement.tipo === "credito_compra" || movement.tipo === "credito_avance");
       }).length,
       latestMovement: movementHistory
         .filter((movement) => movement.cuentaId === account.id)
@@ -901,7 +897,7 @@ const Home = () => {
                           <strong>{account.nombre}</strong>
                           <div className="home-credit-quickview__meta">
                             <span>
-                              {account.banco} · {usageCount} {usageCount === 1 ? "uso" : "usos"} este mes
+                              {account.banco} · {usageCount} {usageCount === 1 ? "movimiento" : "movimientos"}
                             </span>
                             <span className="home-credit-quickview__available">
                               Cupo disponible <strong>${formatMoney(availableCredit)}</strong>

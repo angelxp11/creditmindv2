@@ -56,11 +56,18 @@ const Cuentas = ({ isOpen, onClose }) => {
   const [cardPaymentSourceId, setCardPaymentSourceId] = useState("");
   const [cardPaymentMode, setCardPaymentMode] = useState("total");
   const [cardPaymentMinimumAmount, setCardPaymentMinimumAmount] = useState("");
+  const [interestAccountId, setInterestAccountId] = useState("");
+  const [interestAmount, setInterestAmount] = useState("");
+  const [openActionsId, setOpenActionsId] = useState("");
 
   useEffect(() => {
     if (!isOpen) {
       setFormValues(initialForm);
       setEditingId(null);
+      setOpenActionsId("");
+      setLiquidationAccountId("");
+      setCardPaymentAccountId("");
+      setInterestAccountId("");
       return;
     }
 
@@ -315,6 +322,12 @@ const Cuentas = ({ isOpen, onClose }) => {
   tipoCuenta: account.tipoCuenta || "gastos",
     imagenTarjeta: account.imagenTarjeta || getAccountCardKey(account.tipoCuenta),
 });
+    setOpenActionsId("");
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setFormValues(initialForm);
   };
 
   const handleDelete = async (account) => {
@@ -439,6 +452,95 @@ const Cuentas = ({ isOpen, onClose }) => {
     setCardPaymentSourceId("");
     setCardPaymentMode("total");
     setCardPaymentMinimumAmount("");
+  };
+
+  const handleOpenInterestCredit = (account) => {
+    setInterestAccountId(account.id);
+    setInterestAmount("");
+    setOpenActionsId("");
+  };
+
+  const handleCreditInterest = async (event) => {
+    event.preventDefault();
+    const user = auth.currentUser;
+    const amount = Number(interestAmount.replace(/\./g, ""));
+    const account = accounts.find((item) => item.id === interestAccountId);
+
+    if (!user) {
+      showToast("No hay un usuario autenticado", "error");
+      return;
+    }
+    if (!account || account.tipoCuenta !== "ahorros") {
+      showToast("Selecciona una cuenta de ahorros válida", "error");
+      return;
+    }
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      showToast("Ingresa un valor válido para los intereses", "error");
+      return;
+    }
+
+    setLoading(true);
+    const accountRef = doc(db, "cuentas", account.id);
+    const movementRef = doc(collection(db, "movimientos"));
+    let updatedBalance = 0;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const accountSnapshot = await transaction.get(accountRef);
+        if (!accountSnapshot.exists()) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+
+        const accountData = accountSnapshot.data();
+        const currentBalance = Number(accountData.saldo || 0);
+        updatedBalance = currentBalance + amount;
+        if (
+          accountData.usuarioId !== user.uid ||
+          accountData.tipoCuenta !== "ahorros"
+        ) {
+          throw new Error("ACCOUNT_UNAVAILABLE");
+        }
+        if (!Number.isSafeInteger(currentBalance) || !Number.isSafeInteger(updatedBalance)) {
+          throw new Error("INVALID_ACCOUNT_BALANCE");
+        }
+
+        transaction.update(accountRef, {
+          saldo: updatedBalance,
+          ultimaActualizacion: serverTimestamp(),
+        });
+        transaction.set(movementRef, {
+          userId: user.uid,
+          usuarioId: user.uid,
+          cuentaId: account.id,
+          cuentaBanco: accountData.banco || "",
+          cuentaNombre: accountData.nombre || "",
+          valor: amount,
+          tipo: "ingreso_interes",
+          origen: "interes_cuenta",
+          descripcion: "ABONO DE INTERESES",
+          fechaHora: new Date(),
+          fechaCreacion: serverTimestamp(),
+        });
+      });
+
+      setAccounts((current) => current.map((item) =>
+        item.id === account.id ? { ...item, saldo: updatedBalance } : item
+      ));
+      setInterestAccountId("");
+      setInterestAmount("");
+      showToast("Abono de intereses registrado correctamente", "success");
+    } catch (error) {
+      console.error("Error registrando abono de intereses:", error);
+      if (error.message === "ACCOUNT_UNAVAILABLE") {
+        showToast("La cuenta de ahorros ya no está disponible", "error");
+      } else if (error.message === "INVALID_ACCOUNT_BALANCE") {
+        showToast("El saldo resultante excede el valor permitido", "error");
+      } else {
+        showToast("No se pudo registrar el abono de intereses", "error");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handlePayCreditCard = async (event) => {
@@ -747,6 +849,11 @@ const Cuentas = ({ isOpen, onClose }) => {
     return null;
   }
 
+  const handleInterestAmountChange = (event) => {
+    const digits = event.target.value.replace(/\D/g, "");
+    setInterestAmount(digits.replace(/\B(?=(\d{3})+(?!\d))/g, "."));
+  };
+
   return (
     <div className="cuentas-page">
       {loading && <Loading message="Guardando cuenta..." />}
@@ -761,6 +868,34 @@ const Cuentas = ({ isOpen, onClose }) => {
           </button>
         </div>
 
+        <div
+          className={editingId ? "cuentas-edit-overlay" : undefined}
+          onClick={editingId ? () => !loading && handleCancelEdit() : undefined}
+        >
+          <section
+            className={editingId ? "cuentas-edit-dialog" : undefined}
+            role={editingId ? "dialog" : undefined}
+            aria-modal={editingId ? "true" : undefined}
+            aria-labelledby={editingId ? "cuentas-edit-title" : undefined}
+            onClick={editingId ? (event) => event.stopPropagation() : undefined}
+          >
+            {editingId && (
+              <div className="cuentas-edit-header">
+                <div>
+                  <h3 id="cuentas-edit-title">Editar cuenta</h3>
+                  <p>Actualiza la información de {formValues.nombre || "la cuenta"}.</p>
+                </div>
+                <button
+                  className="cuentas-liquidation__close"
+                  type="button"
+                  aria-label="Cerrar edición"
+                  onClick={handleCancelEdit}
+                  disabled={loading}
+                >
+                  ×
+                </button>
+              </div>
+            )}
         <form className="cuentas-form" onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="banco">Banco</label>
@@ -900,6 +1035,8 @@ const Cuentas = ({ isOpen, onClose }) => {
             {editingId ? "Actualizar cuenta" : "Crear cuenta"}
           </button>
         </form>
+          </section>
+        </div>
 
         <div className="cuentas-list">
           <h3>Lista de cuentas</h3>
@@ -917,7 +1054,7 @@ const Cuentas = ({ isOpen, onClose }) => {
                   <th>Tarjeta</th>
                   <th>Tipo</th>
                   <th>Predeterminada</th>
-                  <th>Acción</th>
+                  <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
@@ -944,53 +1081,103 @@ const Cuentas = ({ isOpen, onClose }) => {
                       </span>
                     </td>
                     <td>
-                      <button
-                        className={`cuentas-default ${account.esDefault ? "cuentas-default--active" : ""}`}
-                        type="button"
-                        disabled={account.tipoCuenta === "credito"}
-                        onClick={() => handleSetDefault(account)}
-                        title={account.esDefault ? "Es la cuenta predeterminada" : "Establecer como predeterminada"}
-                      >
-                        {account.esDefault ? "✓" : "○"}
-                      </button>
+                      <span className={`cuentas-default-label${account.esDefault ? " cuentas-default-label--active" : ""}`}>
+                        {account.esDefault ? "Sí" : "No"}
+                      </span>
                     </td>
                     <td>
-                      <button
-                        className="cuentas-edit"
-                        type="button"
-                        disabled={loading}
-                        onClick={() => handleEdit(account)}
-                      >
-                        Editar
-                      </button>
-                      <button
-                        className="cuentas-delete"
-                        type="button"
-                        disabled={loading}
-                        onClick={() => handleDelete(account)}
-                      >
-                        Eliminar
-                      </button>
-                      {account.tipoCuenta === "credito" && (
+                      <div className="cuentas-actions">
                         <button
-                          className="cuentas-pay-card"
+                          className="cuentas-actions__toggle"
                           type="button"
-                          disabled={loading || Number(account.deudaActual || 0) <= 0}
-                          onClick={() => handleOpenCardPayment(account)}
+                          aria-haspopup="menu"
+                          aria-expanded={openActionsId === account.id}
+                          onClick={() => setOpenActionsId((current) =>
+                            current === account.id ? "" : account.id
+                          )}
                         >
-                          Pagar tarjeta
+                          Acciones
+                          <span aria-hidden="true">⌄</span>
                         </button>
-                      )}
-                      {account.tipoCuenta === "ahorros" && (
-                        <button
-                          className="cuentas-liquidate"
-                          type="button"
-                          disabled={loading || Number(account.saldo || 0) <= 0}
-                          onClick={() => handleOpenLiquidation(account)}
-                        >
-                          Liquidar alcancía
-                        </button>
-                      )}
+                        {openActionsId === account.id && (
+                          <div className="cuentas-actions__menu" role="menu">
+                            <button
+                              className="cuentas-actions__item"
+                              type="button"
+                              role="menuitem"
+                              disabled={loading || account.esDefault}
+                              onClick={() => handleEdit(account)}
+                            >
+                              Editar cuenta
+                            </button>
+                            {account.tipoCuenta !== "credito" && (
+                              <button
+                                className="cuentas-actions__item"
+                                type="button"
+                                role="menuitem"
+                                disabled={loading}
+                                onClick={() => {
+                                  setOpenActionsId("");
+                                  handleSetDefault(account);
+                                }}
+                              >
+                                {account.esDefault ? "Ya es predeterminada" : "Establecer predeterminada"}
+                              </button>
+                            )}
+                            {account.tipoCuenta === "credito" && (
+                              <button
+                                className="cuentas-actions__item"
+                                type="button"
+                                role="menuitem"
+                                disabled={loading || Number(account.deudaActual || 0) <= 0}
+                                onClick={() => {
+                                  setOpenActionsId("");
+                                  handleOpenCardPayment(account);
+                                }}
+                              >
+                                Pagar tarjeta
+                              </button>
+                            )}
+                            {account.tipoCuenta === "ahorros" && (
+                              <>
+                                <button
+                                  className="cuentas-actions__item"
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={loading || Number(account.saldo || 0) <= 0}
+                                  onClick={() => {
+                                    setOpenActionsId("");
+                                    handleOpenLiquidation(account);
+                                  }}
+                                >
+                                  Liquidar alcancía
+                                </button>
+                                <button
+                                  className="cuentas-actions__item"
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={loading}
+                                  onClick={() => handleOpenInterestCredit(account)}
+                                >
+                                  Abonar intereses
+                                </button>
+                              </>
+                            )}
+                            <button
+                              className="cuentas-actions__item cuentas-actions__item--danger"
+                              type="button"
+                              role="menuitem"
+                              disabled={loading}
+                              onClick={() => {
+                                setOpenActionsId("");
+                                handleDelete(account);
+                              }}
+                            >
+                              Eliminar cuenta
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1093,6 +1280,66 @@ const Cuentas = ({ isOpen, onClose }) => {
                 disabled={loading}
               >
                 Cancelar
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {interestAccountId && (
+        <div
+          className="cuentas-modal-overlay"
+          onClick={() => !loading && setInterestAccountId("")}
+        >
+          <form
+            className="cuentas-interest"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="interest-title"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={handleCreditInterest}
+          >
+            <div className="cuentas-interest__header">
+              <div>
+                <h3 id="interest-title">Abonar intereses</h3>
+                <p>
+                  Registra la rentabilidad recibida en{" "}
+                  <strong>{accounts.find((account) => account.id === interestAccountId)?.nombre}</strong>.
+                  El valor se sumará al saldo y quedará en el historial de movimientos.
+                </p>
+              </div>
+              <button
+                className="cuentas-liquidation__close"
+                type="button"
+                aria-label="Cerrar abono de intereses"
+                onClick={() => setInterestAccountId("")}
+                disabled={loading}
+              >
+                ×
+              </button>
+            </div>
+            <label className="form-group cuentas-interest__amount" htmlFor="interestAmount">
+              Valor de los intereses
+              <input
+                id="interestAmount"
+                type="text"
+                inputMode="numeric"
+                value={interestAmount}
+                onChange={handleInterestAmountChange}
+                placeholder="0"
+                autoFocus
+              />
+            </label>
+            <div className="cuentas-liquidation__actions">
+              <button
+                className="cuentas-liquidation__cancel"
+                type="button"
+                onClick={() => setInterestAccountId("")}
+                disabled={loading}
+              >
+                Cancelar
+              </button>
+              <button className="cuentas-submit" type="submit" disabled={loading}>
+                Registrar abono
               </button>
             </div>
           </form>

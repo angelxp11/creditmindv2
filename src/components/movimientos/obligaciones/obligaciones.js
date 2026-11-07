@@ -82,6 +82,25 @@ const getMovementDate = (movement) => {
 	return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;",
+	'"': "&quot;",
+	"'": "&#39;",
+}[character]));
+
+const formatStatementDate = (value) => {
+	if (!value) return "—";
+	const date = value instanceof Date ? value : new Date(`${String(value).slice(0, 10)}T12:00:00`);
+	return Number.isNaN(date.getTime())
+		? "—"
+		: date.toLocaleDateString("es-CO", { day: "2-digit", month: "long", year: "numeric" });
+};
+
+const formatStatementMoney = (value) =>
+	`$${Number(value || 0).toLocaleString("es-CO")}`;
+
 const initialIncomeForm = () => ({
 	nombre: "",
 	valor: "",
@@ -332,6 +351,152 @@ const Obligaciones = ({ isOpen, onClose }) => {
 					: error.message === "INVALID_CARD_MOVEMENT"
 						? "Hay movimientos de tarjeta con datos inválidos"
 						: "No se pudo generar el extracto de tarjeta", "error");
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	const openCardStatementPdf = async (obligation) => {
+		const user = auth.currentUser;
+		const account = creditAccounts.find((item) => item.id === obligation.tarjetaId);
+		if (!user || !account || obligation.tipo !== "pago_tarjeta") {
+			showToast("No se pudo identificar la tarjeta de este extracto", "error");
+			return;
+		}
+
+		const printWindow = window.open("", "_blank");
+		if (!printWindow) {
+			showToast("Permite las ventanas emergentes para abrir el extracto", "error");
+			return;
+		}
+		printWindow.document.write("<title>Preparando extracto…</title><p>Preparando extracto de tarjeta…</p>");
+		printWindow.document.close();
+
+		setLoading(true);
+		try {
+			const [userIdSnapshot, usuarioIdSnapshot] = await Promise.all([
+				getDocs(query(collection(db, "movimientos"), where("userId", "==", user.uid))),
+				getDocs(query(collection(db, "movimientos"), where("usuarioId", "==", user.uid))),
+			]);
+			const movementById = new Map([
+				...userIdSnapshot.docs,
+				...usuarioIdSnapshot.docs,
+			].map((movementDoc) => [movementDoc.id, {
+				id: movementDoc.id,
+				...movementDoc.data(),
+			}]));
+			const cutoffDate = String(obligation.fechaCorte || "").slice(0, 10);
+			const movements = [...movementById.values()]
+				.filter((movement) =>
+					movement.cuentaId === account.id &&
+					["credito_compra", "credito_avance"].includes(movement.tipo)
+				)
+				.map((movement) => {
+					const date = getMovementDate(movement);
+					if (!date) return null;
+					const amount = getCreditMovementStatementAmount(
+						account,
+						movement,
+						date,
+						cutoffDate
+					);
+					return amount > 0 ? { ...movement, statementAmount: amount, date } : null;
+				})
+				.filter(Boolean)
+				.sort((first, second) => first.date - second.date);
+			const cardName = `${account.banco || ""} · ${account.nombre || ""}`.trim();
+			const statementName = obligation.nombre || `Extracto ${cardName}`;
+			const totalAmount = Number(obligation.valor || 0);
+			const pendingAmount = Number(obligation.montoPendiente ?? totalAmount);
+			const paidAmount = Math.max(0, totalAmount - pendingAmount);
+			const rows = movements.length
+				? movements.map((movement) => {
+					const installments = Math.max(1, Number(movement.cuotas || 1));
+					const description = movement.nombreEstablecimiento ||
+						movement.establecimiento ||
+						(movement.tipo === "credito_avance" ? "Avance de tarjeta" : "Compra con tarjeta");
+					return `<tr>
+						<td>${escapeHtml(formatStatementDate(movement.date))}</td>
+						<td>${escapeHtml(description)}</td>
+						<td>${movement.tipo === "credito_avance" ? "Avance" : "Compra"}</td>
+						<td>${movement.tipo === "credito_compra" ? `${installments} cuota${installments === 1 ? "" : "s"}` : "—"}</td>
+						<td class="amount">${escapeHtml(formatStatementMoney(movement.statementAmount))}</td>
+					</tr>`;
+				}).join("")
+				: `<tr><td class="empty" colspan="5">No se encontraron movimientos registrados para este ciclo.</td></tr>`;
+
+			printWindow.document.open();
+			printWindow.document.write(`<!doctype html>
+				<html lang="es">
+				<head>
+					<meta charset="utf-8">
+					<meta name="viewport" content="width=device-width, initial-scale=1">
+					<title>${escapeHtml(statementName)}</title>
+					<style>
+						:root { color-scheme: light; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; }
+						* { box-sizing: border-box; }
+						body { margin: 0; padding: 36px; background: #edf2f8; }
+						.sheet { max-width: 860px; margin: auto; padding: 42px; background: #fff; border-radius: 20px; box-shadow: 0 16px 50px #12213a1c; }
+						.topline { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 26px; border-bottom: 1px solid #e3e8f0; }
+						.brand { color: #64748b; font-size: 12px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+						h1 { margin: 8px 0 6px; color: #13213a; font-size: 28px; letter-spacing: -.04em; }
+						.subtitle { margin: 0; color: #64748b; }
+						.badge { padding: 8px 12px; border-radius: 999px; background: #e8f4ff; color: #1762a8; font-size: 12px; font-weight: 800; white-space: nowrap; }
+						.meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0; }
+						.meta article, .summary article { padding: 15px; border: 1px solid #e3e8f0; border-radius: 12px; }
+						.meta span, .summary span { display: block; margin-bottom: 7px; color: #718096; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+						.meta strong { color: #1d2b45; font-size: 14px; }
+						.summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 22px 0 30px; }
+						.summary article { background: #f8fafc; }
+						.summary article:last-child { border-color: #b7daf8; background: #eff8ff; }
+						.summary strong { color: #172033; font-size: 20px; font-variant-numeric: tabular-nums; }
+						h2 { margin: 0 0 12px; color: #1d2b45; font-size: 16px; }
+						table { width: 100%; border-collapse: collapse; }
+						th { padding: 11px 10px; background: #f1f5f9; color: #526179; font-size: 10px; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+						td { padding: 13px 10px; border-bottom: 1px solid #e8edf3; color: #25334b; font-size: 12px; }
+						td.amount { text-align: right; white-space: nowrap; font-weight: 700; font-variant-numeric: tabular-nums; }
+						th:last-child { text-align: right; }
+						.empty { padding: 24px; color: #718096; text-align: center; }
+						.footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 24px; color: #8390a3; font-size: 10px; }
+						.print { display: block; margin: 0 auto 18px; padding: 11px 18px; border: 0; border-radius: 10px; background: #1762a8; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+						@media (max-width: 600px) { body { padding: 12px; } .sheet { padding: 22px 16px; border-radius: 12px; } .topline { flex-direction: column; } h1 { font-size: 23px; } .meta, .summary { grid-template-columns: 1fr; } table { font-size: 11px; } th, td { padding: 9px 5px; } }
+						@media print { @page { size: A4; margin: 14mm; } body { padding: 0; background: white; } .sheet { max-width: none; padding: 0; border-radius: 0; box-shadow: none; } .print { display: none; } tr { break-inside: avoid; } }
+					</style>
+				</head>
+				<body>
+					<button class="print" onclick="window.print()">Imprimir o guardar como PDF</button>
+					<main class="sheet">
+						<header class="topline">
+							<div><div class="brand">CreditMind · Estado de cuenta</div><h1>${escapeHtml(statementName)}</h1><p class="subtitle">${escapeHtml(cardName)}</p></div>
+							<span class="badge">TARJETA DE CRÉDITO</span>
+						</header>
+						<section class="meta">
+							<article><span>Periodo facturado</span><strong>${escapeHtml(formatStatementDate(obligation.fechaInicioCiclo))} – ${escapeHtml(formatStatementDate(obligation.fechaCorte))}</strong></article>
+							<article><span>Fecha de corte</span><strong>${escapeHtml(formatStatementDate(obligation.fechaCorte))}</strong></article>
+							<article><span>Fecha límite de pago</span><strong>${escapeHtml(formatStatementDate(obligation.fechaProximoPago))}</strong></article>
+						</section>
+						<section class="summary">
+							<article><span>Total del extracto</span><strong>${escapeHtml(formatStatementMoney(totalAmount))}</strong></article>
+							<article><span>Pagado</span><strong>${escapeHtml(formatStatementMoney(paidAmount))}</strong></article>
+							<article><span>Saldo pendiente</span><strong>${escapeHtml(formatStatementMoney(pendingAmount))}</strong></article>
+						</section>
+						<section>
+							<h2>Movimientos del periodo</h2>
+							<table>
+								<thead><tr><th>Fecha</th><th>Descripción</th><th>Tipo</th><th>Plan</th><th style="text-align:right">Valor en extracto</th></tr></thead>
+								<tbody>${rows}</tbody>
+							</table>
+						</section>
+						<footer class="footer"><span>Documento generado el ${escapeHtml(formatStatementDate(new Date()))}</span><span>Valores en pesos colombianos (COP)</span></footer>
+					</main>
+					<script>window.addEventListener("load", () => setTimeout(() => window.print(), 250));</script>
+				</body>
+				</html>`);
+			printWindow.document.close();
+		} catch (error) {
+			console.error("Error preparando PDF del extracto:", error);
+			printWindow.close();
+			showToast("No se pudo preparar el PDF del extracto", "error");
 		} finally {
 			setLoading(false);
 		}
@@ -907,6 +1072,31 @@ const Obligaciones = ({ isOpen, onClose }) => {
 						{obligation.fechaUltimoPeriodoPagado && (
 							<span>Periodo cubierto: {formatObligationDate(obligation.fechaUltimoPeriodoPagado)}</span>
 						)}
+						{obligation.tipo === "pago_tarjeta" &&
+							Array.isArray(obligation.cuotasCompra) &&
+							obligation.cuotasCompra.length > 0 && (
+								<div className="obligacion-row__statement-installments">
+									<strong>Cuotas de compras financiadas</strong>
+									{obligation.cuotasCompra.map((installment) => {
+										const linkedDebt = debts.find((debt) =>
+											debt.id === installment.deudaId
+										);
+										const linkedObligation = obligations.find((item) =>
+											item.id === installment.obligacionId
+										);
+										return (
+											<span key={`${installment.deudaId}-${installment.numero}`}>
+												{linkedDebt?.nombre || linkedObligation?.nombre || "Compra financiada"}
+												{" · "}cuota {installment.numero}
+												{" · "}
+												{installment.pagada
+													? "Pagada con este extracto"
+													: "Incluida en este extracto"}
+											</span>
+										);
+									})}
+								</div>
+							)}
 						<span>
 							{obligation.deudaPagada
 								? "Deuda saldada"
@@ -1270,6 +1460,16 @@ const Obligaciones = ({ isOpen, onClose }) => {
 																	<span>
 																		{obligation.nombre}
 																		<small>Vence {formatObligationDate(obligation.fechaProximoPago)}</small>
+																		{obligation.tipo === "pago_tarjeta" && (
+																			<button
+																				className="obligaciones-income-plan__statement-button"
+																				type="button"
+																				disabled={loading}
+																				onClick={() => openCardStatementPdf(obligation)}
+																			>
+																				Ver extracto · PDF
+																			</button>
+																		)}
 																	</span>
 																	<span>
 																		${obligation.plannedAmount.toLocaleString("es-CO")}
