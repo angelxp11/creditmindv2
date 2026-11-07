@@ -1,17 +1,17 @@
 {
   "files": {
-    "main.css": "/creditmindv2/static/css/main.fd0c60b6.css",
-    "main.js": "/creditmindv2/static/js/main.a06eab20.js",
+    "main.css": "/creditmindv2/static/css/main.d5cfa0bb.css",
+    "main.js": "/creditmindv2/static/js/main.e814f5e0.js",
     "static/media/credito.png": "/creditmindv2/static/media/credito.077373ae4c0cf094bae4.png",
     "static/media/daviplata.png": "/creditmindv2/static/media/daviplata.99f6436b59494241b1d8.png",
     "static/media/ahorros.png": "/creditmindv2/static/media/ahorros.2cc7cde038ddada91886.png",
     "static/media/debito.png": "/creditmindv2/static/media/debito.00d189217c1e5ef345e7.png",
     "index.html": "/creditmindv2/index.html",
-    "main.fd0c60b6.css.map": "/creditmindv2/static/css/main.fd0c60b6.css.map",
-    "main.a06eab20.js.map": "/creditmindv2/static/js/main.a06eab20.js.map"
+    "main.d5cfa0bb.css.map": "/creditmindv2/static/css/main.d5cfa0bb.css.map",
+    "main.e814f5e0.js.map": "/creditmindv2/static/js/main.e814f5e0.js.map"
   },
   "entrypoints": [
-    "static/css/main.fd0c60b6.css",
-    "static/js/main.a06eab20.js"
+    "static/css/main.d5cfa0bb.css",
+    "static/js/main.e814f5e0.js"
   ]
 }
