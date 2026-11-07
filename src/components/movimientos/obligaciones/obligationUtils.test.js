@@ -10,6 +10,7 @@ import {
   getUniqueDebtObligations,
   isObligationDue,
   sortObligationsByAmount,
+  sortObligationsByDueDate,
 } from "./obligationUtils";
 
 test("monthly obligations retain their original due day after February", () => {
@@ -58,7 +59,7 @@ test("the 30th paycheck also covers the next month's days 1 to 14", () => {
     "2026-10-30"
   );
 
-  expect(plan.startDate).toBe("2026-11-01");
+  expect(plan.startDate).toBe("2026-10-30");
   expect(plan.endDate).toBe("2026-12-14");
   expect(plan.allocations).toHaveLength(3);
   expect(plan.allocations[0].date).toBe("2026-10-30");
@@ -199,6 +200,47 @@ test("the plan does not assign future obligations to an income date that has alr
   expect(plan.allocations.map(({ date }) => date)).toEqual(["2026-11-15", "2026-11-30"]);
   expect(plan.unassigned.map(({ id }) => id)).toEqual(["internet"]);
   expect(plan.allocations[0].carryIn).toBe(0);
+});
+
+test("the plan assigns an unpaid due obligation to the most recent prior income", () => {
+  const plan = getObligationIncomePlan(
+    [{
+      id: "mobile-internet",
+      nombre: "Internet móvil",
+      valor: 47900,
+      frecuencia: "mensual",
+      diaVencimiento: 1,
+      fechaProximoPago: "2026-11-01",
+      activa: true,
+    }],
+    [{
+      id: "salary",
+      nombre: "Nómina",
+      valor: 800000,
+      frecuencia: "quincenal",
+      fechaProximoPago: "2026-11-15",
+      diaVencimiento: 15,
+      diaSegundoPago: 30,
+      proximoPagoNumero: 1,
+      activa: true,
+    }],
+    "2026-11-02",
+    true
+  );
+
+  expect(plan.unassigned).toHaveLength(0);
+  expect(plan.allocations.map(({ date, obligations }) => ({
+    date,
+    obligations: obligations.map(({ fechaProximoPago }) => fechaProximoPago),
+  }))).toEqual([
+    { date: "2026-10-30", obligations: ["2026-11-01"] },
+    { date: "2026-11-15", obligations: [] },
+    { date: "2026-11-30", obligations: ["2026-12-01"] },
+    { date: "2026-12-15", obligations: [] },
+    { date: "2026-12-30", obligations: ["2027-01-01"] },
+  ]);
+  expect(plan.allocations.find(({ date }) => date === "2026-10-30").carryOut).toBe(0);
+  expect(plan.allocations.find(({ date }) => date === "2026-11-15").carryIn).toBe(0);
 });
 
 test("paid obligations do not appear in the income plan", () => {
@@ -380,6 +422,20 @@ test("monthly commitment normalizes quincenal obligations and income to two paym
 test("current-month obligations count as pending before their due date", () => {
   expect(isObligationDue("2026-09-28", "2026-09-30")).toBe(true);
   expect(isObligationDue("2026-10-01", "2026-09-30")).toBe(false);
+});
+
+test("home obligations are sorted from the nearest due date to the latest", () => {
+  const obligations = [
+    { id: "latest", fechaProximoPago: "2026-11-20" },
+    { id: "middle", fechaProximoPago: { toDate: () => new Date(2026, 9, 25) } },
+    { id: "nearest", fechaProximoPago: "2026-10-24" },
+  ];
+
+  expect(sortObligationsByDueDate(obligations).map(({ id }) => id)).toEqual([
+    "nearest",
+    "middle",
+    "latest",
+  ]);
 });
 
 test("home includes current-month obligations and only the next statement for each card", () => {

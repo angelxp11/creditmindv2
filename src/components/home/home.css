@@ -1031,6 +1031,37 @@
   min-width: 0;
 }
 
+.home-credit-quickview__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.home-credit-quickview__meta > span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.home-credit-quickview__meta .home-credit-quickview__available {
+  color: var(--success, #22c55e);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.home-credit-quickview__available strong {
+  display: block;
+  color: var(--text-title);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.home-credit-quickview__meta > .home-credit-quickview__available {
+  color: var(--text-muted);
+  font-size: 0.62rem;
+}
+
 .home-credit-quickview__name strong {
   overflow: hidden;
   color: var(--text-title);
@@ -1068,6 +1099,68 @@
 
 .home-credit-quickview__amounts span:nth-child(3) strong {
   color: #eab308;
+}
+
+.home-credit-quickview__last-movement {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-primary, var(--bg-secondary));
+}
+
+.home-credit-quickview__last-movement-icon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 9px;
+  box-sizing: content-box;
+  border-radius: 10px;
+  color: var(--success, #22c55e);
+  background: color-mix(in srgb, var(--success, #22c55e) 12%, transparent);
+}
+
+.home-credit-quickview__last-movement-content {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.home-credit-quickview__last-movement-content > span {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.home-credit-quickview__last-movement-content > strong {
+  overflow: hidden;
+  color: var(--text-title);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-credit-quickview__last-movement-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.home-credit-quickview__last-movement-meta > span {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.home-credit-quickview__last-movement-meta > strong {
+  color: var(--text-title);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 @media (max-width: 520px) {

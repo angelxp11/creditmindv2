@@ -1221,7 +1221,7 @@ const Obligaciones = ({ isOpen, onClose }) => {
 										<div className="obligaciones-list__heading">
 											<div>
 												<h3 id="income-plan-title">Plan según tus ingresos</h3>
-												<p>Proyección del próximo mes y los vencimientos del 1 al 14 del siguiente: cada obligación se asigna al ingreso programado más reciente anterior a su vencimiento. Si no hay un ingreso previo, queda sin asignar; los sobrantes solo se acumulan si activas “Compensar sobrantes”.</p>
+												<p>Incluye obligaciones pendientes desde hoy, incluso si ya vencieron, y proyecta el próximo mes y los vencimientos del 1 al 14 del siguiente. Cada obligación se asigna al ingreso programado más reciente anterior a su vencimiento, aunque ese ingreso ya haya pasado. Las obligaciones futuras sin un ingreso previo quedan sin asignar. Los sobrantes solo se acumulan si activas “Compensar sobrantes”.</p>
 											</div>
 										</div>
 										{incomePlan.allocations.length === 0 && incomePlan.unassigned.length === 0 ? (

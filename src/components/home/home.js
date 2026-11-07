@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Check, ClipboardPaste, MapPin, X } from "lucide-react";
+import { Check, ClipboardPaste, MapPin, Receipt, X } from "lucide-react";
 import { auth, db } from "../../server/api";
 import {
   collection,
@@ -13,7 +13,13 @@ import {
 } from "firebase/firestore";
 import Loading from "../../resources/loading/loading";
 import { showToast } from "../../resources/toastcontainer/ToastContainer";
-import { formatObligationDate, formatObligationSchedule, getHomePendingObligations, getLocalDateString } from "../movimientos/obligaciones/obligationUtils";
+import {
+  formatObligationDate,
+  formatObligationSchedule,
+  getHomePendingObligations,
+  getLocalDateString,
+  sortObligationsByDueDate,
+} from "../movimientos/obligaciones/obligationUtils";
 import { getAccountCardImage, preloadAccountCardImages } from "../../resources/imagenes/tarjetas/accountCard";
 import {
   addCreditInstallmentToStatement,
@@ -52,6 +58,18 @@ const getObligationDateString = (value) => {
       ? value
       : null;
   return date && !Number.isNaN(date.getTime()) ? getLocalDateString(date) : "";
+};
+
+const getMovementDate = (movement) => {
+  const value = movement.fechaHora || movement.fechaCreacion;
+  const date = typeof value?.toDate === "function"
+    ? value.toDate()
+    : value instanceof Date
+      ? value
+      : value
+        ? new Date(value)
+        : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
 };
 
 const normalizeTagValue = (value) => String(value ?? "").trim().toUpperCase();
@@ -718,12 +736,10 @@ const Home = () => {
       setActiveBudgetRows(updatedBudgetRows);
       if (saved.obligation) {
         setPendingObligations((current) => {
-        return [
-          ...current.filter((obligation) => obligation.id !== saved.obligation.id),
-          saved.obligation,
-        ].sort((first, second) =>
-          String(first.fechaProximoPago).localeCompare(String(second.fechaProximoPago))
-        );
+          return sortObligationsByDueDate([
+            ...current.filter((obligation) => obligation.id !== saved.obligation.id),
+            saved.obligation,
+          ]);
         });
       }
       showToast(isCreditAccount && installments > 1
@@ -761,13 +777,22 @@ const Home = () => {
     "home-budget-summary__dot--4",
     "home-budget-summary__dot--5",
   ];
+  const currentMonth = getLocalDateString().slice(0, 7);
   const frequentCreditAccounts = creditAccounts
     .map((account) => ({
       account,
-      usageCount: movementHistory.filter((movement) =>
-        movement.cuentaId === account.id &&
-        (movement.tipo === "credito_compra" || movement.tipo === "credito_avance")
-      ).length,
+      usageCount: movementHistory.filter((movement) => {
+        const movementDate = getMovementDate(movement);
+        return movement.cuentaId === account.id &&
+          (movement.tipo === "credito_compra" || movement.tipo === "credito_avance") &&
+          movementDate &&
+          getLocalDateString(movementDate).slice(0, 7) === currentMonth;
+      }).length,
+      latestMovement: movementHistory
+        .filter((movement) => movement.cuentaId === account.id)
+        .map((movement) => ({ movement, date: getMovementDate(movement) }))
+        .filter(({ date }) => date)
+        .sort((first, second) => second.date - first.date)[0] || null,
     }))
     .sort((first, second) => second.usageCount - first.usageCount);
 
@@ -842,7 +867,7 @@ const Home = () => {
                 <span>Ordenadas por frecuencia de uso</span>
               </div>
               <div className="home-credit-quickview__list">
-                {frequentCreditAccounts.map(({ account, usageCount }) => {
+                {frequentCreditAccounts.map(({ account, usageCount, latestMovement }) => {
                   const limit = Math.max(0, Number(account.limiteCredito) || 0);
                   const debt = Math.max(0, Number(account.deudaActual) || 0);
                   const usageMetrics = getCreditUsageMetrics(account);
@@ -857,7 +882,12 @@ const Home = () => {
                   const reservedAmount = limit > 0
                     ? Math.max(0, limit - Math.min(debt, limit) - spendableAmount)
                     : 0;
+                  const availableCredit = spendableAmount + reservedAmount;
                   const reservedWidth = limit > 0 ? reservedAmount / limit * 100 : 0;
+                  const latestMovementName = latestMovement?.movement.nombreEstablecimiento ||
+                    latestMovement?.movement.establecimiento ||
+                    latestMovement?.movement.descripcion ||
+                    "Movimiento registrado";
 
                   return (
                     <article className="home-credit-quickview__item" key={account.id}>
@@ -869,7 +899,14 @@ const Home = () => {
                       <div className="home-credit-quickview__details">
                         <div className="home-credit-quickview__name">
                           <strong>{account.nombre}</strong>
-                          <span>{account.banco} · {usageCount} {usageCount === 1 ? "uso" : "usos"}</span>
+                          <div className="home-credit-quickview__meta">
+                            <span>
+                              {account.banco} · {usageCount} {usageCount === 1 ? "uso" : "usos"} este mes
+                            </span>
+                            <span className="home-credit-quickview__available">
+                              Cupo disponible <strong>${formatMoney(availableCredit)}</strong>
+                            </span>
+                          </div>
                         </div>
                         <div
                           className="home-credit__track"
@@ -888,6 +925,23 @@ const Home = () => {
                           <span>Gastado <strong>${formatMoney(debt)}</strong></span>
                           <span>Puedes gastar <strong>${formatMoney(spendableAmount)}</strong></span>
                           <span>No disponible <strong>${formatMoney(reservedAmount)}</strong></span>
+                        </div>
+                        <div className="home-credit-quickview__last-movement">
+                          <Receipt className="home-credit-quickview__last-movement-icon" aria-hidden="true" />
+                          <div className="home-credit-quickview__last-movement-content">
+                            <span>Último movimiento</span>
+                            {latestMovement ? (
+                              <>
+                                <strong>{latestMovementName}</strong>
+                                <div className="home-credit-quickview__last-movement-meta">
+                                  <span>{latestMovement.date.toLocaleDateString("es-CO")}</span>
+                                  <strong>${formatMoney(latestMovement.movement.valor)}</strong>
+                                </div>
+                              </>
+                            ) : (
+                              <strong>Sin movimientos registrados</strong>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </article>

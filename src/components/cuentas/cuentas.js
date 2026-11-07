@@ -6,6 +6,7 @@ import {
   where,
   getDocs,
   addDoc,
+  deleteDoc,
   updateDoc,
   runTransaction,
   serverTimestamp,
@@ -314,6 +315,74 @@ const Cuentas = ({ isOpen, onClose }) => {
   tipoCuenta: account.tipoCuenta || "gastos",
     imagenTarjeta: account.imagenTarjeta || getAccountCardKey(account.tipoCuenta),
 });
+  };
+
+  const handleDelete = async (account) => {
+    const user = auth.currentUser;
+    if (!user) {
+      showToast("No hay un usuario autenticado", "error");
+      return;
+    }
+
+    const balance = Number(account.saldo || 0);
+    const creditDebt = Number(account.deudaActual || 0);
+    if ((account.tipoCuenta === "credito" && creditDebt > 0) ||
+      (account.tipoCuenta !== "credito" && balance > 0)) {
+      showToast(
+        account.tipoCuenta === "credito"
+          ? "Paga la deuda pendiente de la tarjeta antes de eliminarla"
+          : "Retira o transfiere el saldo de la cuenta antes de eliminarla",
+        "error"
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const obligationsQuery = query(
+        collection(db, "obligaciones"),
+        where("usuarioId", "==", user.uid)
+      );
+      const obligationsSnapshot = await getDocs(obligationsQuery);
+      const hasPendingObligations = obligationsSnapshot.docs.some((obligationDoc) => {
+        const obligation = obligationDoc.data();
+        const isLinked = account.tipoCuenta === "credito"
+          ? obligation.tarjetaId === account.id
+          : obligation.cuentaId === account.id;
+        const pendingAmount = Number(obligation.montoPendiente ?? obligation.valor ?? 0);
+        return isLinked && obligation.activa && !obligation.anulada && pendingAmount > 0;
+      });
+
+      if (hasPendingObligations) {
+        showToast(
+          account.tipoCuenta === "credito"
+            ? "Hay pagos pendientes asociados a esta tarjeta"
+            : "Hay obligaciones pendientes asociadas a esta cuenta",
+          "error"
+        );
+        return;
+      }
+
+      const accountName = `${account.banco} · ${account.nombre}`;
+      if (!window.confirm(
+        `¿Eliminar "${accountName}"? Sus movimientos históricos se conservarán. Esta acción no se puede deshacer.`
+      )) {
+        return;
+      }
+
+      await deleteDoc(doc(db, "cuentas", account.id));
+      setAccounts((current) => current.filter((item) => item.id !== account.id));
+      if (editingId === account.id) {
+        setEditingId(null);
+        setFormValues(initialForm);
+      }
+      showToast("Cuenta eliminada correctamente", "success");
+    } catch (error) {
+      console.error("Error eliminando cuenta:", error);
+      showToast("No se pudo eliminar la cuenta", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSetDefault = async (account) => {
@@ -889,9 +958,18 @@ const Cuentas = ({ isOpen, onClose }) => {
                       <button
                         className="cuentas-edit"
                         type="button"
+                        disabled={loading}
                         onClick={() => handleEdit(account)}
                       >
                         Editar
+                      </button>
+                      <button
+                        className="cuentas-delete"
+                        type="button"
+                        disabled={loading}
+                        onClick={() => handleDelete(account)}
+                      >
+                        Eliminar
                       </button>
                       {account.tipoCuenta === "credito" && (
                         <button

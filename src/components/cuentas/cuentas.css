@@ -390,6 +390,7 @@
 /* Acciones de fila */
 
 .cuentas-edit,
+.cuentas-delete,
 .cuentas-liquidate,
 .cuentas-pay-card {
   min-height: 38px;
@@ -411,6 +412,22 @@
 .cuentas-edit:hover {
   opacity: 0.9;
   transform: translateY(-1px);
+}
+
+.cuentas-delete {
+  margin-left: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-card));
+  color: var(--danger);
+}
+
+.cuentas-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 18%, var(--bg-card));
+}
+
+.cuentas-delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .cuentas-liquidate {
