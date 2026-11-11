@@ -72,6 +72,12 @@ const getMovementDate = (movement) => {
   return date && !Number.isNaN(date.getTime()) ? date : null;
 };
 
+const isActualCreditMovement = (movement) => {
+  if (!movement || movement.cuentaId == null) return false;
+  const type = movement.tipo;
+  return type === "credito_compra" || type === "credito_avance" || (!type && movement.valor !== undefined);
+};
+
 const normalizeTagValue = (value) => String(value ?? "").trim().toUpperCase();
 
 const normalizeTagList = (list = []) => {
@@ -778,18 +784,20 @@ const Home = () => {
     "home-budget-summary__dot--5",
   ];
   const frequentCreditAccounts = creditAccounts
-    .map((account) => ({
-      account,
-      usageCount: movementHistory.filter((movement) => {
-        return movement.cuentaId === account.id &&
-          (movement.tipo === "credito_compra" || movement.tipo === "credito_avance");
-      }).length,
-      latestMovement: movementHistory
-        .filter((movement) => movement.cuentaId === account.id)
-        .map((movement) => ({ movement, date: getMovementDate(movement) }))
-        .filter(({ date }) => date)
-        .sort((first, second) => second.date - first.date)[0] || null,
-    }))
+    .map((account) => {
+      const accountMovements = movementHistory.filter(
+        (movement) => movement.cuentaId === account.id && isActualCreditMovement(movement)
+      );
+
+      return {
+        account,
+        usageCount: accountMovements.length,
+        latestMovement: accountMovements
+          .map((movement) => ({ movement, date: getMovementDate(movement) }))
+          .filter(({ date }) => date)
+          .sort((first, second) => second.date - first.date)[0] || null,
+      };
+    })
     .sort((first, second) => second.usageCount - first.usageCount);
 
   return (
